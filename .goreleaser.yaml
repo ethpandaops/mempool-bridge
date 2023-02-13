@@ -21,6 +21,9 @@ builds:
       - 7
     ignore:
       - goarch: 386
+      # broken with go-ethereum github.com/prometheus/tsdb module
+      - goos: windows
+        goarch: arm64
     mod_timestamp: "{{ .CommitTimestamp }}"
 checksum:
   name_template: 'checksums.txt'
