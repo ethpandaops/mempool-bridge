@@ -14,7 +14,7 @@ import (
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "mempool-bridge",
-	Short: "Ethereum execution client stub for consensus layer clients",
+	Short: "Ethereum execution layer memory pool bridge",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg := initCommon()
 		b := bridge.New(log, cfg)
