@@ -150,14 +150,14 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 	return nil
 }
 
-func (c *Coordinator) BridgeTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
+func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions *mimicry.Transactions) error {
 	errg, ectx := errgroup.WithContext(ctx)
 
 	for _, peer := range *c.peers {
 		if peer != nil {
 			go func(p *Peer) {
 				errg.Go(func() error {
-					err := p.BridgeTransactions(ectx, transactions)
+					err := p.SendTransactions(ectx, transactions)
 
 					status := "success"
 					if err != nil {

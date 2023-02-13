@@ -42,7 +42,7 @@ func New(log *logrus.Logger, conf *Config) *Bridge {
 		metrics: NewMetrics("mempool_bridge"),
 	}
 
-	s, err := source.NewCoordinator(&conf.Source, b.bridgeTransactions, log)
+	s, err := source.NewCoordinator(&conf.Source, b.broadcast, log)
 	if err != nil {
 		log.Fatalf("failed to create source: %s", err)
 	}
@@ -105,7 +105,7 @@ func (b *Bridge) ServeMetrics(ctx context.Context) error {
 	return nil
 }
 
-func (b *Bridge) bridgeTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
+func (b *Bridge) broadcast(ctx context.Context, transactions *mimicry.Transactions) error {
 	if transactions == nil {
 		return nil
 	}
@@ -116,11 +116,11 @@ func (b *Bridge) bridgeTransactions(ctx context.Context, transactions *mimicry.T
 		return nil
 	}
 
-	b.log.WithField("transactions_count", length).Info("bridging transactions")
+	b.log.WithField("transactions_count", length).Info("sending transactions to peers")
 
 	b.metrics.AddTransactions(length)
 
-	if err := b.t.BridgeTransactions(ctx, transactions); err != nil {
+	if err := b.t.SendTransactionsToPeers(ctx, transactions); err != nil {
 		return err
 	}
 

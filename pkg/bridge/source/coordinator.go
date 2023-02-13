@@ -16,7 +16,7 @@ import (
 type Coordinator struct {
 	config *Config
 
-	handler func(ctx context.Context, transactions *mimicry.Transactions) error
+	broadcast func(ctx context.Context, transactions *mimicry.Transactions) error
 
 	log logrus.FieldLogger
 
@@ -33,7 +33,7 @@ type CoordinatorStatus struct {
 	DisconnectedPeers int
 }
 
-func NewCoordinator(config *Config, handler func(ctx context.Context, transactions *mimicry.Transactions) error, log logrus.FieldLogger) (*Coordinator, error) {
+func NewCoordinator(config *Config, broadcast func(ctx context.Context, transactions *mimicry.Transactions) error, log logrus.FieldLogger) (*Coordinator, error) {
 	if config == nil {
 		return nil, errors.New("config is required")
 	}
@@ -43,12 +43,12 @@ func NewCoordinator(config *Config, handler func(ctx context.Context, transactio
 	}
 
 	return &Coordinator{
-		config:  config,
-		handler: handler,
-		log:     log.WithField("component", "source"),
-		cache:   cache.NewSharedCache(),
-		peers:   &map[string]bool{},
-		metrics: NewMetrics("mempool_bridge_source"),
+		config:    config,
+		broadcast: broadcast,
+		log:       log.WithField("component", "source"),
+		cache:     cache.NewSharedCache(),
+		peers:     &map[string]bool{},
+		metrics:   NewMetrics("mempool_bridge_source"),
 	}, nil
 }
 
@@ -61,7 +61,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		go func(record string, peers *map[string]bool) {
 			_ = retry.Do(
 				func() error {
-					peer, err := NewPeer(ctx, c.log, record, c.handler, c.cache, &c.config.TransactionFilters)
+					peer, err := NewPeer(ctx, c.log, record, c.broadcast, c.cache, &c.config.TransactionFilters)
 					if err != nil {
 						return err
 					}

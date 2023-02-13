@@ -80,7 +80,7 @@ func (p *Peer) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (p *Peer) BridgeTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
+func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
 	if !p.ready {
 		p.log.Debug("peer is not ready")
 		return nil
@@ -89,9 +89,9 @@ func (p *Peer) BridgeTransactions(ctx context.Context, transactions *mimicry.Tra
 	err := p.client.Transactions(ctx, transactions)
 
 	if err != nil {
-		p.log.WithError(err).Debug("failed to bridge transactions")
+		p.log.WithError(err).Debug("failed to send transactions")
 	} else {
-		p.log.WithField("count", len(*transactions)).Debug("bridged transactions")
+		p.log.WithField("count", len(*transactions)).Debug("send transactions")
 	}
 
 	return err
