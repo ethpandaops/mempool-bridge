@@ -6,7 +6,7 @@ require (
 	github.com/avast/retry-go/v4 v4.3.3
 	github.com/creasty/defaults v1.6.0
 	github.com/ethereum/go-ethereum v1.10.26
-	github.com/ethpandaops/ethcore v0.0.0-20230212235804-5d4020edde84
+	github.com/ethpandaops/ethcore v0.0.0-20230214061031-e4ba7cb9b40d
 	github.com/go-co-op/gocron v1.18.0
 	github.com/prometheus/client_golang v1.14.0
 	github.com/savid/ttlcache/v3 v3.0.2
