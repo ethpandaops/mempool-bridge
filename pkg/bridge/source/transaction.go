@@ -31,27 +31,6 @@ func (p *Peer) filterTransaction(ctx context.Context, transaction *types.Transac
 			}
 		}
 
-		if p.txFilterConfig.From != nil && len(p.txFilterConfig.From) > 0 {
-			from, err := p.signer.Sender(transaction)
-			if err != nil {
-				p.log.WithError(err).Error("failed to get sender")
-				return false, err
-			}
-
-			found := false
-
-			for _, filterFrom := range p.txFilterConfig.From {
-				if filterFrom == from.String() {
-					found = true
-					break
-				}
-			}
-
-			if !found {
-				p.log.WithField("from", from.String()).Debug("Transaction filtered out")
-				return false, nil
-			}
-		}
 	}
 
 	return true, nil
@@ -78,8 +57,15 @@ func (t TransactionExporter) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (p *Peer) ExportTransactions(ctx context.Context, items []*common.Hash) error {
+// ExportNormalTransactions handles non-blob transactions
+func (p *Peer) ExportNormalTransactions(ctx context.Context, items []*common.Hash) error {
 	go func() {
+		if len(items) == 0 {
+			return
+		}
+
+		p.log.WithField("count", len(items)).Debug("exporting normal transactions")
+
 		hashes := make([]common.Hash, len(items))
 
 		for i, item := range items {
@@ -91,17 +77,26 @@ func (p *Peer) ExportTransactions(ctx context.Context, items []*common.Hash) err
 
 		txs, err := p.client.GetPooledTransactions(ctx, hashes)
 		if err != nil {
-			p.log.WithError(err).Error("Failed to get pooled transactions")
+			p.log.WithError(err).Error("Failed to get normal pooled transactions")
 			return
 		}
 
 		if txs != nil {
 			newTxs := mimicry.Transactions{}
 
-			for _, tx := range txs.PooledTransactionsPacket {
+			for _, tx := range txs.PooledTransactionsResponse {
 				exists := p.sharedCache.Transaction.Get(tx.Hash().String())
 				if exists == nil {
 					p.sharedCache.Transaction.Set(tx.Hash().String(), tx, ttlcache.DefaultTTL)
+
+					// Track transaction type in metrics
+					p.metrics.IncReceivedTxCount(tx.Type())
+
+					p.log.WithFields(logrus.Fields{
+						"tx_hash": tx.Hash().String(),
+						"tx_size": tx.Size(),
+						"tx_type": tx.Type(),
+					}).Debug("processing normal transaction")
 
 					valid, err := p.filterTransaction(ctx, tx)
 					if err != nil {
@@ -125,13 +120,58 @@ func (p *Peer) ExportTransactions(ctx context.Context, items []*common.Hash) err
 	return nil
 }
 
-func (p *Peer) processTransaction(ctx context.Context, hash common.Hash) error {
-	// check if transaction is already in the shared cache, no need to fetch it again
-	exists := p.sharedCache.Transaction.Get(hash.String())
-	if exists == nil {
-		item := hash
-		p.txProc.Write(&item)
-	}
+// ExportBlobTransactions handles blob transactions with priority
+func (p *Peer) ExportBlobTransactions(ctx context.Context, items []*common.Hash) error {
+	go func() {
+		if len(items) == 0 {
+			return
+		}
+
+		// Process one blob at a time
+		item := items[0]
+		exists := p.sharedCache.Transaction.Get(item.String())
+		if exists != nil {
+			return // Already processed
+		}
+
+		hash := *item
+		hashes := []common.Hash{hash}
+
+		txs, err := p.client.GetPooledTransactions(ctx, hashes)
+		if err != nil {
+			p.log.WithError(err).Error("Failed to get blob pooled transaction")
+			return
+		}
+
+		if txs != nil && len(txs.PooledTransactionsResponse) > 0 {
+			newTxs := mimicry.Transactions{}
+
+			for _, tx := range txs.PooledTransactionsResponse {
+				exists := p.sharedCache.Transaction.Get(tx.Hash().String())
+				if exists == nil {
+					p.sharedCache.Transaction.Set(tx.Hash().String(), tx, ttlcache.DefaultTTL)
+
+					// Track transaction type in metrics
+					p.metrics.IncReceivedTxCount(tx.Type())
+
+					valid, err := p.filterTransaction(ctx, tx)
+					if err != nil {
+						p.log.WithError(err).Error("failed handling blob transaction")
+					}
+
+					if valid {
+						newTxs = append(newTxs, tx)
+					}
+				}
+			}
+
+			if len(newTxs) > 0 {
+				if err := p.handler(ctx, &newTxs); err != nil {
+					p.log.WithError(err).Error("failed handling blob transaction")
+				}
+			}
+		}
+	}()
 
 	return nil
 }

@@ -116,8 +116,6 @@ func (b *Bridge) broadcast(ctx context.Context, transactions *mimicry.Transactio
 		return nil
 	}
 
-	b.log.WithField("transactions_count", length).Info("sending transactions to peers")
-
 	b.metrics.AddTransactions(length)
 
 	if err := b.t.SendTransactionsToPeers(ctx, transactions); err != nil {

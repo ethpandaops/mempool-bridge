@@ -151,6 +151,43 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 }
 
 func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions *mimicry.Transactions) error {
+	if len(*transactions) == 0 {
+		return nil
+	}
+
+	// Count transactions by type for logging
+	typeCounts := make(map[string]int)
+	for _, tx := range *transactions {
+		txType := tx.Type()
+		// Get transaction type string
+		typeStr := "unknown"
+		switch txType {
+		case 0x00: // LegacyTxType
+			typeStr = "legacy"
+		case 0x01: // AccessListTxType
+			typeStr = "access_list"
+		case 0x02: // DynamicFeeTxType
+			typeStr = "dynamic_fee"
+		case 0x03: // BlobTxType
+			typeStr = "blob"
+		case 0x04: // SetCodeTxType
+			typeStr = "set_code"
+		}
+		typeCounts[typeStr]++
+	}
+
+	// Create log fields
+	logFields := logrus.Fields{
+		"total": len(*transactions),
+	}
+
+	// Add type counts to fields
+	for typeStr, count := range typeCounts {
+		logFields[typeStr] = count
+	}
+
+	c.log.WithFields(logFields).Info("sending transactions to peers")
+
 	errg, ectx := errgroup.WithContext(ctx)
 
 	for _, peer := range *c.peers {
@@ -165,6 +202,11 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 					}
 
 					c.metrics.AddTransactions(len(*transactions), status)
+
+					// Track individual transaction types
+					for _, tx := range *transactions {
+						c.metrics.AddTransactionByType(tx.Type(), status)
+					}
 
 					return err
 				})

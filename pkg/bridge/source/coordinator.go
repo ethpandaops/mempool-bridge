@@ -61,7 +61,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		go func(record string, peers *map[string]bool) {
 			_ = retry.Do(
 				func() error {
-					peer, err := NewPeer(ctx, c.log, record, c.broadcast, c.cache, &c.config.TransactionFilters)
+					peer, err := NewPeer(ctx, c.log, record, c.broadcast, c.cache, &c.config.TransactionFilters, c.metrics)
 					if err != nil {
 						return err
 					}
