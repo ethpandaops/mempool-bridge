@@ -40,12 +40,14 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 
 	p.client.OnStatus(ctx, func(ctx context.Context, status *mimicry.Status) error {
 		p.ready = true
+
 		return nil
 	})
 
 	p.client.OnDisconnect(ctx, func(ctx context.Context, reason *mimicry.Disconnect) error {
 		p.ready = false
 		str := "unknown"
+
 		if reason != nil {
 			str = reason.Reason.String()
 		}
@@ -64,6 +66,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	err := p.client.Start(ctx)
 	if err != nil {
 		p.log.WithError(err).Debug("failed to dial client")
+
 		return nil, err
 	}
 
@@ -83,6 +86,13 @@ func (p *Peer) Stop(ctx context.Context) error {
 func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
 	if !p.ready {
 		p.log.Debug("peer is not ready")
+
+		return nil
+	}
+
+	if transactions == nil {
+		p.log.Debug("transactions is nil")
+
 		return nil
 	}
 
@@ -91,7 +101,7 @@ func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Trans
 	if err != nil {
 		p.log.WithError(err).Debug("failed to send transactions")
 	} else {
-		p.log.WithField("count", len(*transactions)).Debug("send transactions")
+		p.log.WithField("count", len(*transactions)).Debug("sent transactions")
 	}
 
 	return err

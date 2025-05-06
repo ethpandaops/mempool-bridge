@@ -51,6 +51,7 @@ func (t *testBatchExporter[T]) ExportItems(ctx context.Context, items []*T) erro
 	select {
 	case <-ctx.Done():
 		t.err = ctx.Err()
+
 		return ctx.Err()
 	default:
 	}
@@ -64,6 +65,7 @@ func (t *testBatchExporter[T]) ExportItems(ctx context.Context, items []*T) erro
 
 func (t *testBatchExporter[T]) Shutdown(context.Context) error {
 	t.shutdownCount++
+
 	return nil
 }
 
@@ -154,6 +156,7 @@ func TestNewBatchItemProcessorWithOptions(t *testing.T) {
 	for _, option := range options {
 		t.Run(option.name, func(t *testing.T) {
 			te := testBatchExporter[TestItem]{}
+
 			ssp := createAndRegisterBatchSP(option.o, &te)
 			if ssp == nil {
 				t.Fatalf("%s: Error creating new instance of BatchItemProcessor\n", option.name)
@@ -163,6 +166,7 @@ func TestNewBatchItemProcessorWithOptions(t *testing.T) {
 				if option.writeNumItems > 0 && i%option.writeNumItems == 0 {
 					time.Sleep(10 * time.Millisecond)
 				}
+
 				ssp.Write(&TestItem{
 					name: "test",
 				})
@@ -379,6 +383,7 @@ type indefiniteExporter[T TestItem] struct{}
 func (indefiniteExporter[T]) Shutdown(context.Context) error { return nil }
 func (indefiniteExporter[T]) ExportItems(ctx context.Context, _ []*T) error {
 	<-ctx.Done()
+
 	return ctx.Err()
 }
 
