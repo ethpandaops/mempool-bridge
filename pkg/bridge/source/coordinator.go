@@ -94,6 +94,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 				retry.Attempts(0),
 				retry.DelayType(func(n uint, err error, config *retry.Config) time.Duration {
 					c.log.WithError(err).Debug("peer failed")
+
 					return c.config.RetryInterval
 				}),
 			)
@@ -114,6 +115,13 @@ func (c *Coordinator) Stop(ctx context.Context) error {
 func (c *Coordinator) status(ctx context.Context) CoordinatorStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.peers == nil {
+		return CoordinatorStatus{
+			ConnectedPeers:    0,
+			DisconnectedPeers: 0,
+		}
+	}
 
 	connectedPeers := 0
 
@@ -140,12 +148,12 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 		return err
 	}
 
-	if _, err := cr.Every("60s").Do(func() {
+	if _, err := cr.Every("30s").Do(func() {
 		status := c.status(ctx)
 		c.log.WithFields(logrus.Fields{
 			"connected_peers":    status.ConnectedPeers,
 			"disconnected_peers": status.DisconnectedPeers,
-		}).Info("status")
+		}).Info("source peer summary")
 	}); err != nil {
 		return err
 	}

@@ -160,11 +160,13 @@ func (bvp *BatchItemProcessor[T]) Shutdown(ctx context.Context) error {
 		go func() {
 			close(bvp.stopCh)
 			bvp.stopWait.Wait()
+
 			if bvp.e != nil {
 				if err = bvp.e.Shutdown(ctx); err != nil {
 					bvp.log.WithError(err).Error("failed to shutdown processor")
 				}
 			}
+
 			close(wait)
 		}()
 		// Wait until the wait group is done or the context is cancelled
@@ -355,6 +357,7 @@ func recoverSendOnClosedChan() {
 			return
 		}
 	}
+
 	panic(x)
 }
 

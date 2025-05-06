@@ -103,15 +103,24 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	})
 
 	p.client.OnNewPooledTransactionHashes(ctx, func(ctx context.Context, hashes *mimicry.NewPooledTransactionHashes) error {
-		if hashes != nil {
-			for i, hash := range hashes.Hashes {
-				t := hashes.Types[i]
-				// Track the transaction type in metrics
-				p.metrics.IncNewTxHashesCount(t)
+		if hashes == nil || len(hashes.Hashes) == 0 {
+			return nil
+		}
 
-				if errT := p.processTransaction(ctx, hash, t); errT != nil {
-					p.log.WithError(errT).Error("failed processing event")
-				}
+		// Ensure Types array has the same length as Hashes to prevent index out of bounds
+		if len(hashes.Types) != len(hashes.Hashes) {
+			p.log.Error("types and hashes arrays have different lengths")
+
+			return nil
+		}
+
+		for i, hash := range hashes.Hashes {
+			t := hashes.Types[i]
+			// Track the transaction type in metrics
+			p.metrics.IncNewTxHashesCount(t)
+
+			if errT := p.processTransaction(ctx, hash, t); errT != nil {
+				p.log.WithError(errT).Error("failed processing event")
 			}
 		}
 
@@ -135,6 +144,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 					if errT != nil {
 						p.log.WithError(errT).Error("failed handling transaction")
 					}
+
 					if valid {
 						newTxs = append(newTxs, tx)
 					}
@@ -147,6 +157,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 				}
 			}
 		}
+
 		return nil
 	})
 
@@ -160,7 +171,9 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 			"reason": str,
 		}).Debug("disconnected from client")
 
-		response <- errors.New("disconnected from peer (reason " + str + ")")
+		if response != nil {
+			response <- errors.New("disconnected from peer (reason " + str + ")")
+		}
 
 		return nil
 	})
@@ -170,6 +183,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	err = p.client.Start(ctx)
 	if err != nil {
 		p.log.WithError(err).Debug("failed to dial client")
+
 		return nil, err
 	}
 

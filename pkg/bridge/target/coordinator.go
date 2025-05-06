@@ -22,6 +22,10 @@ type Coordinator struct {
 
 	metrics *Metrics
 
+	// Transaction summary counters for periodic logging
+	txCounters     map[string]int
+	txCountersLock sync.Mutex
+
 	mu sync.Mutex
 }
 
@@ -40,10 +44,11 @@ func NewCoordinator(config *Config, log logrus.FieldLogger) (*Coordinator, error
 	}
 
 	return &Coordinator{
-		config:  config,
-		log:     log.WithField("component", "target"),
-		peers:   &map[string]*Peer{},
-		metrics: NewMetrics("mempool_bridge_target"),
+		config:     config,
+		log:        log.WithField("component", "target"),
+		peers:      &map[string]*Peer{},
+		metrics:    NewMetrics("mempool_bridge_target"),
+		txCounters: make(map[string]int),
 	}, nil
 }
 
@@ -89,6 +94,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 				retry.Attempts(0),
 				retry.DelayType(func(n uint, err error, config *retry.Config) time.Duration {
 					c.log.WithError(err).Debug("peer failed")
+
 					return c.config.RetryInterval
 				}),
 			)
@@ -135,12 +141,36 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 		return err
 	}
 
-	if _, err := cr.Every("60s").Do(func() {
+	if _, err := cr.Every("30s").Do(func() {
 		status := c.status(ctx)
+
+		// Log peer status
 		c.log.WithFields(logrus.Fields{
 			"connected_peers":    status.ConnectedPeers,
 			"disconnected_peers": status.DisconnectedPeers,
-		}).Info("status")
+		}).Info("target peer summary")
+
+		// Handle transaction counters separately
+		c.txCountersLock.Lock()
+		txTotal := 0
+		txFields := logrus.Fields{}
+
+		if len(c.txCounters) > 0 {
+			for txType, count := range c.txCounters {
+				txFields[txType] = count
+				txTotal += count
+			}
+
+			// Only log if there were transactions
+			if txTotal > 0 {
+				txFields["total"] = txTotal
+				c.log.WithFields(txFields).Info("transactions sent to target peers summary")
+			}
+
+			// Reset counters after logging
+			c.txCounters = make(map[string]int)
+		}
+		c.txCountersLock.Unlock()
 	}); err != nil {
 		return err
 	}
@@ -151,16 +181,17 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 }
 
 func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions *mimicry.Transactions) error {
-	if len(*transactions) == 0 {
+	if transactions == nil || len(*transactions) == 0 {
 		return nil
 	}
 
-	// Count transactions by type for logging
-	typeCounts := make(map[string]int)
+	// Count transactions by type for summary counters
+	c.txCountersLock.Lock()
 	for _, tx := range *transactions {
 		txType := tx.Type()
 		// Get transaction type string
 		typeStr := "unknown"
+
 		switch txType {
 		case 0x00: // LegacyTxType
 			typeStr = "legacy"
@@ -173,44 +204,41 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 		case 0x04: // SetCodeTxType
 			typeStr = "set_code"
 		}
-		typeCounts[typeStr]++
-	}
 
-	// Create log fields
-	logFields := logrus.Fields{
-		"total": len(*transactions),
+		c.txCounters[typeStr] += 1
 	}
+	c.txCountersLock.Unlock()
 
-	// Add type counts to fields
-	for typeStr, count := range typeCounts {
-		logFields[typeStr] = count
-	}
-
-	c.log.WithFields(logFields).Info("sending transactions to peers")
+	// Debug level log for detailed troubleshooting if needed
+	c.log.WithField("count", len(*transactions)).Debug("sending transactions to peers")
 
 	errg, ectx := errgroup.WithContext(ctx)
 
-	for _, peer := range *c.peers {
+	c.mu.Lock()
+	peers := *c.peers
+	c.mu.Unlock()
+
+	for _, peer := range peers {
 		if peer != nil {
-			go func(p *Peer) {
-				errg.Go(func() error {
-					err := p.SendTransactions(ectx, transactions)
+			p := peer // Create a copy of the loop variable to avoid race conditions
 
-					status := "success"
-					if err != nil {
-						status = "failure"
-					}
+			errg.Go(func() error {
+				err := p.SendTransactions(ectx, transactions)
 
-					c.metrics.AddTransactions(len(*transactions), status)
+				status := "success"
+				if err != nil {
+					status = "failure"
+				}
 
-					// Track individual transaction types
-					for _, tx := range *transactions {
-						c.metrics.AddTransactionByType(tx.Type(), status)
-					}
+				c.metrics.AddTransactions(len(*transactions), status)
 
-					return err
-				})
-			}(peer)
+				// Track individual transaction types
+				for _, tx := range *transactions {
+					c.metrics.AddTransactionByType(tx.Type(), status)
+				}
+
+				return err
+			})
 		}
 	}
 
