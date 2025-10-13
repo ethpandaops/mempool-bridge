@@ -1,0 +1,33 @@
+logging: "info" # panic,fatal,warn,info,debug,trace
+metricsAddr: ":9090"
+
+# Mode selection: "p2p" or "rpc"
+# When mode is "rpc", ONLY rpcEndpoints are used (nodeRecords are ignored)
+# When mode is "p2p", ONLY nodeRecords are used (rpcEndpoints are ignored)
+mode: "rpc"
+
+# Source: Where to listen for mempool transactions
+source:
+  retryInterval: 30s
+
+  # RPC mode: WebSocket endpoints to subscribe to newPendingTransactions
+  # Note: WebSocket protocol (ws:// or wss://) is REQUIRED for subscriptions
+  rpcEndpoints:
+    - ws://localhost:8546
+    - ws://node2.example.com:8546
+
+  # Optional: Filter transactions by to/from addresses
+  # transactionFilters:
+  #   to:
+  #     - 0x0000000000000000000000000000000000000000
+  #   from:
+  #     - 0x2222222222222222222222222222222222222222
+
+# Target: Where to send transactions
+target:
+  retryInterval: 30s
+
+  # RPC mode: HTTP or WebSocket endpoints for sending transactions via eth_sendRawTransaction
+  rpcEndpoints:
+    - http://localhost:8545
+    - http://node2.example.com:8545
