@@ -6,11 +6,12 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethpandaops/ethcore/pkg/execution/mimicry"
-	"github.com/savid/ttlcache/v3"
+	"github.com/jellydator/ttlcache/v3"
 	"github.com/sirupsen/logrus"
 )
 
-func (p *Peer) filterTransaction(ctx context.Context, transaction *types.Transaction) (bool, error) {
+//nolint:nestif,unparam // Transaction filtering logic requires nested conditions, interface requires error return
+func (p *Peer) filterTransaction(_ context.Context, transaction *types.Transaction) (bool, error) {
 	if p.txFilterConfig != nil {
 		if len(p.txFilterConfig.To) > 0 {
 			if transaction.To() != nil {
@@ -37,12 +38,14 @@ func (p *Peer) filterTransaction(ctx context.Context, transaction *types.Transac
 	return true, nil
 }
 
+// TransactionExporter exports batched transaction hashes for processing.
 type TransactionExporter struct {
 	log logrus.FieldLogger
 
 	handler func(ctx context.Context, items []*common.Hash) error
 }
 
+// NewTransactionExporter creates a new transaction exporter.
 func NewTransactionExporter(log logrus.FieldLogger, handler func(ctx context.Context, items []*common.Hash) error) (TransactionExporter, error) {
 	return TransactionExporter{
 		log:     log,
@@ -50,15 +53,19 @@ func NewTransactionExporter(log logrus.FieldLogger, handler func(ctx context.Con
 	}, nil
 }
 
+// ExportItems exports a batch of transaction hashes.
 func (t TransactionExporter) ExportItems(ctx context.Context, items []*common.Hash) error {
 	return t.handler(ctx, items)
 }
 
-func (t TransactionExporter) Shutdown(ctx context.Context) error {
+// Shutdown handles cleanup for the exporter.
+func (t TransactionExporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
 // ExportNormalTransactions handles non-blob transactions
+//
+//nolint:gocyclo // Complex transaction processing logic required for P2P
 func (p *Peer) ExportNormalTransactions(ctx context.Context, items []*common.Hash) error {
 	go func() {
 		if len(items) == 0 {

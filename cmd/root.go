@@ -1,3 +1,4 @@
+// Package cmd provides the command-line interface for the mempool-bridge application.
 package cmd
 
 import (
@@ -12,10 +13,12 @@ import (
 )
 
 // rootCmd represents the base command when called without any subcommands
+//
+//nolint:gochecknoglobals // Required for cobra CLI structure
 var rootCmd = &cobra.Command{
 	Use:   "mempool-bridge",
 	Short: "Ethereum execution layer memory pool bridge",
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(_ *cobra.Command, _ []string) {
 		cfg := initCommon()
 		b := bridge.New(log, cfg)
 		if err := b.Start(context.Background()); err != nil {
@@ -24,6 +27,7 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+//nolint:gochecknoglobals // Required for cobra CLI configuration
 var (
 	cfgFile string
 	log     = logrus.New()
@@ -53,6 +57,7 @@ func loadConfigFromFile(file string) (*bridge.Config, error) {
 		return nil, err
 	}
 
+	//nolint:gosec // Config file path is from CLI flag, acceptable risk
 	yamlFile, err := os.ReadFile(file)
 
 	if err != nil {

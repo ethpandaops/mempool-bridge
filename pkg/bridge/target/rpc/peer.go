@@ -10,6 +10,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var (
+	// ErrAllTransactionsFailed is returned when all transactions fail to send
+	ErrAllTransactionsFailed = errors.New("all transactions failed to send")
+)
+
 // Peer represents an RPC connection to an Ethereum node for sending transactions
 type Peer struct {
 	log logrus.FieldLogger
@@ -21,7 +26,7 @@ type Peer struct {
 }
 
 // NewPeer creates a new RPC target peer
-func NewPeer(ctx context.Context, log logrus.FieldLogger, rpcEndpoint string) (*Peer, error) {
+func NewPeer(_ context.Context, log logrus.FieldLogger, rpcEndpoint string) (*Peer, error) {
 	p := Peer{
 		log:         log.WithField("rpc_endpoint", rpcEndpoint),
 		rpcEndpoint: rpcEndpoint,
@@ -64,7 +69,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 }
 
 // Stop closes the RPC connection
-func (p *Peer) Stop(ctx context.Context) error {
+func (p *Peer) Stop(_ context.Context) error {
 	if p.ethClient != nil {
 		p.ethClient.Close()
 	}
@@ -129,7 +134,7 @@ func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Trans
 
 	// Return error only if all transactions failed
 	if errorCount > 0 && successCount == 0 {
-		return errors.New("all transactions failed to send")
+		return ErrAllTransactionsFailed
 	}
 
 	return nil

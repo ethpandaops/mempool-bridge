@@ -1,3 +1,4 @@
+// Package rpc provides RPC-based transaction target functionality.
 package rpc
 
 import (
@@ -12,6 +13,13 @@ import (
 	"github.com/go-co-op/gocron"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
+)
+
+var (
+	// ErrConfigRequired is returned when config is nil
+	ErrConfigRequired = errors.New("config is required")
+	// ErrRPCEndpointsRequired is returned when rpcEndpoints is empty
+	ErrRPCEndpointsRequired = errors.New("rpcEndpoints is required")
 )
 
 // Coordinator manages multiple RPC peer connections for sending transactions
@@ -40,11 +48,11 @@ type CoordinatorStatus struct {
 // NewCoordinator creates a new RPC target coordinator
 func NewCoordinator(config *target.Config, log logrus.FieldLogger) (*Coordinator, error) {
 	if config == nil {
-		return nil, errors.New("config is required")
+		return nil, ErrConfigRequired
 	}
 
 	if len(config.RPCEndpoints) == 0 {
-		return nil, errors.New("rpcEndpoints is required")
+		return nil, ErrRPCEndpointsRequired
 	}
 
 	return &Coordinator{
@@ -97,7 +105,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 					return response
 				},
 				retry.Attempts(0),
-				retry.DelayType(func(n uint, err error, config *retry.Config) time.Duration {
+				retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
 					c.log.WithError(err).Debug("peer failed")
 
 					return c.config.RetryInterval
@@ -106,20 +114,16 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		}(rpcEndpoint, c.peers)
 	}
 
-	if err := c.startCrons(ctx); err != nil {
-		return err
-	}
-
-	return nil
+	return c.startCrons(ctx)
 }
 
 // Stop stops the RPC coordinator
-func (c *Coordinator) Stop(ctx context.Context) error {
+func (c *Coordinator) Stop(_ context.Context) error {
 	return nil
 }
 
 // status returns the current status of the coordinator
-func (c *Coordinator) status(ctx context.Context) CoordinatorStatus {
+func (c *Coordinator) status(_ context.Context) CoordinatorStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -214,7 +218,7 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 			typeStr = "set_code"
 		}
 
-		c.txCounters[typeStr] += 1
+		c.txCounters[typeStr]++
 	}
 	c.txCountersLock.Unlock()
 

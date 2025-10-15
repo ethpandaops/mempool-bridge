@@ -10,8 +10,8 @@ require (
 	github.com/ethereum/go-ethereum v1.15.5
 	github.com/ethpandaops/ethcore v0.0.0-20250317181755-3b229dede7c9
 	github.com/go-co-op/gocron v1.18.0
+	github.com/jellydator/ttlcache/v3 v3.0.0
 	github.com/prometheus/client_golang v1.14.0
-	github.com/savid/ttlcache/v3 v3.0.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.8.1
 	github.com/stretchr/testify v1.10.0

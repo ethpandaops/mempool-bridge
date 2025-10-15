@@ -2,7 +2,7 @@ package p2p
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -10,10 +10,11 @@ import (
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source"
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source/cache"
 	"github.com/ethpandaops/mempool-bridge/pkg/processor"
-	"github.com/savid/ttlcache/v3"
+	"github.com/jellydator/ttlcache/v3"
 	"github.com/sirupsen/logrus"
 )
 
+// Peer represents a P2P source connection to a single node.
 type Peer struct {
 	log logrus.FieldLogger
 
@@ -37,12 +38,13 @@ type Peer struct {
 	metrics *source.Metrics
 }
 
-// Transaction type with hash mapping
+// TransactionTypeHash maps a transaction hash to its type.
 type TransactionTypeHash struct {
 	Hash common.Hash
 	Type byte
 }
 
+// NewPeer creates a new P2P source peer.
 func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string, handler func(ctx context.Context, transactions *mimicry.Transactions) error, sharedCache *cache.SharedCache, txFilterConfig *source.TransactionFilterConfig, metrics *source.Metrics) (*Peer, error) {
 	client, err := mimicry.New(ctx, log, nodeRecord, "mempool-bridge")
 	if err != nil {
@@ -63,6 +65,9 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string, han
 	}, nil
 }
 
+// Start begins the P2P peer connection and subscribes to transaction events
+//
+//nolint:gocyclo // Complex initialization logic required for P2P peer setup
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	response := make(chan error)
 
@@ -98,7 +103,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 
 	p.duplicateCache.Start()
 
-	p.client.OnStatus(ctx, func(ctx context.Context, status *mimicry.Status) error {
+	p.client.OnStatus(ctx, func(_ context.Context, _ *mimicry.Status) error {
 		return nil
 	})
 
@@ -128,6 +133,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	})
 
 	p.client.OnTransactions(ctx, func(ctx context.Context, txs *mimicry.Transactions) error {
+		//nolint:nestif // Transaction filtering logic requires nested conditions
 		if txs != nil {
 			newTxs := mimicry.Transactions{}
 
@@ -161,7 +167,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 		return nil
 	})
 
-	p.client.OnDisconnect(ctx, func(ctx context.Context, reason *mimicry.Disconnect) error {
+	p.client.OnDisconnect(ctx, func(_ context.Context, reason *mimicry.Disconnect) error {
 		str := "unknown"
 		if reason != nil {
 			str = reason.Reason.String()
@@ -172,7 +178,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 		}).Debug("disconnected from client")
 
 		if response != nil {
-			response <- errors.New("disconnected from peer (reason " + str + ")")
+			response <- fmt.Errorf("%w (reason %s)", ErrPeerDisconnected, str)
 		}
 
 		return nil
@@ -190,6 +196,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	return response, nil
 }
 
+// Stop stops the peer and cleans up resources.
 func (p *Peer) Stop(ctx context.Context) error {
 	p.duplicateCache.Stop()
 
@@ -210,7 +217,8 @@ func (p *Peer) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (p *Peer) processTransaction(ctx context.Context, hash common.Hash, txType byte) error {
+//nolint:unparam // Interface requires error return for consistency
+func (p *Peer) processTransaction(_ context.Context, hash common.Hash, txType byte) error {
 	// check if transaction is already in the shared cache, no need to fetch it again
 	exists := p.sharedCache.Transaction.Get(hash.String())
 	if exists == nil {

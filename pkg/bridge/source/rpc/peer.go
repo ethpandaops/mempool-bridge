@@ -2,7 +2,6 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -14,7 +13,7 @@ import (
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source"
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source/cache"
 	"github.com/ethpandaops/mempool-bridge/pkg/processor"
-	"github.com/savid/ttlcache/v3"
+	"github.com/jellydator/ttlcache/v3"
 	"github.com/sirupsen/logrus"
 )
 
@@ -60,18 +59,18 @@ func NewTransactionExporter(log logrus.FieldLogger, handler func(ctx context.Con
 	}, nil
 }
 
-// ExportItems exports transaction hashes
+// ExportItems exports transaction hashes.
 func (t TransactionExporter) ExportItems(ctx context.Context, items []*common.Hash) error {
 	return t.handler(ctx, items)
 }
 
-// Shutdown handles cleanup for the exporter
-func (t TransactionExporter) Shutdown(ctx context.Context) error {
+// Shutdown handles cleanup for the exporter.
+func (t TransactionExporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
 // NewPeer creates a new RPC peer for sourcing transactions
-func NewPeer(ctx context.Context, log logrus.FieldLogger, rpcEndpoint string, handler func(ctx context.Context, transactions *mimicry.Transactions) error, sharedCache *cache.SharedCache, txFilterConfig *source.TransactionFilterConfig, metrics *source.Metrics) (*Peer, error) {
+func NewPeer(_ context.Context, log logrus.FieldLogger, rpcEndpoint string, handler func(ctx context.Context, transactions *mimicry.Transactions) error, sharedCache *cache.SharedCache, txFilterConfig *source.TransactionFilterConfig, metrics *source.Metrics) (*Peer, error) {
 	duplicateCache := cache.NewDuplicateCache()
 
 	return &Peer{
@@ -138,7 +137,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 		defer func() {
 			if r := recover(); r != nil {
 				p.log.WithField("panic", r).Error("panic in subscription handler")
-				response <- errors.New("subscription handler panicked")
+				response <- ErrSubscriptionPanicked
 			}
 		}()
 
@@ -219,7 +218,9 @@ func (p *Peer) Stop(ctx context.Context) error {
 }
 
 // filterTransaction filters transactions based on configuration
-func (p *Peer) filterTransaction(ctx context.Context, transaction *types.Transaction) (bool, error) {
+//
+//nolint:nestif,unparam // Transaction filtering logic requires nested conditions, interface requires error return
+func (p *Peer) filterTransaction(_ context.Context, transaction *types.Transaction) (bool, error) {
 	if p.txFilterConfig != nil {
 		if len(p.txFilterConfig.To) > 0 {
 			if transaction.To() != nil {
@@ -281,12 +282,13 @@ func (p *Peer) ExportNormalTransactions(ctx context.Context, items []*common.Has
 				continue
 			}
 
-			// Create a fresh context for fetching to avoid using cancelled parent context
+			// Create a fresh context for fetching to avoid using canceled parent context
 			fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
 
 			// Fetch transaction via RPC
 			tx, pending, err := p.ethClient.TransactionByHash(fetchCtx, *item)
+			cancel()
+
 			if err != nil {
 				errorCount++
 				// Log with more detail about the error type
@@ -395,7 +397,7 @@ func (p *Peer) ExportBlobTransactions(ctx context.Context, items []*common.Hash)
 			return // Already processed
 		}
 
-		// Create a fresh context for fetching to avoid using cancelled parent context
+		// Create a fresh context for fetching to avoid using canceled parent context
 		fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 

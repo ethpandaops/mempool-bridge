@@ -10,11 +10,17 @@ mode: "rpc"
 source:
   retryInterval: 30s
 
-  # RPC mode: WebSocket endpoints to subscribe to newPendingTransactions
-  # Note: WebSocket protocol (ws:// or wss://) is REQUIRED for subscriptions
+  # RPC mode: Supports both WebSocket and HTTP endpoints
+  # - WebSocket (ws://, wss://): Real-time subscriptions via eth_subscribe (recommended)
+  # - HTTP (http://, https://): Polling txpool_content at pollingInterval
+  # You can mix both types in the same config!
   rpcEndpoints:
-    - ws://localhost:8546
-    - ws://node2.example.com:8546
+    - ws://localhost:8546          # WebSocket: real-time subscription
+    - http://node2.example.com:8545  # HTTP: polls txpool_content every 10s
+
+  # Polling interval for HTTP endpoints (default: 10s)
+  # Only used for http:// and https:// endpoints
+  pollingInterval: 10s
 
   # Optional: Filter transactions by to/from addresses
   # transactionFilters:

@@ -7,6 +7,11 @@ import (
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/target"
 )
 
+var (
+	// ErrInvalidMode is returned when an invalid mode is specified
+	ErrInvalidMode = errors.New("mode must be either 'p2p' or 'rpc'")
+)
+
 // Mode defines the bridge operation mode
 type Mode string
 
@@ -17,6 +22,7 @@ const (
 	ModeRPC Mode = "rpc"
 )
 
+// Config holds the bridge configuration.
 type Config struct {
 	LoggingLevel string        `yaml:"logging" default:"info"`
 	MetricsAddr  string        `yaml:"metricsAddr" default:":9090"`
@@ -25,18 +31,15 @@ type Config struct {
 	Target       target.Config `yaml:"target"`
 }
 
+// Validate validates the bridge configuration.
 func (c *Config) Validate() error {
 	if c.Mode != ModeP2P && c.Mode != ModeRPC {
-		return errors.New("mode must be either 'p2p' or 'rpc'")
+		return ErrInvalidMode
 	}
 
 	if err := c.Source.Validate(c.Mode); err != nil {
 		return err
 	}
 
-	if err := c.Target.Validate(c.Mode); err != nil {
-		return err
-	}
-
-	return nil
+	return c.Target.Validate(c.Mode)
 }

@@ -20,6 +20,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var errFailToExport = errors.New("fail to export")
+
 type TestItem struct {
 	name string
 }
@@ -218,7 +220,7 @@ func TestBatchItemProcessorExportTimeout(t *testing.T) {
 
 	time.Sleep(1 * time.Millisecond)
 
-	if exp.err != context.DeadlineExceeded {
+	if !errors.Is(exp.err, context.DeadlineExceeded) {
 		t.Errorf("context deadline error not returned: got %+v", exp.err)
 	}
 }
@@ -308,7 +310,7 @@ func TestBatchItemProcessorForceFlushSucceeds(t *testing.T) {
 
 func TestBatchItemProcessorDropBatchIfFailed(t *testing.T) {
 	te := testBatchExporter[TestItem]{
-		errors: []error{errors.New("fail to export")},
+		errors: []error{errFailToExport},
 	}
 	option := testOption{
 		o: []BatchItemProcessorOption{

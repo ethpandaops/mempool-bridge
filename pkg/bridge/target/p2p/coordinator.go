@@ -1,3 +1,4 @@
+// Package p2p provides P2P-based transaction target functionality.
 package p2p
 
 import (
@@ -14,6 +15,14 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var (
+	// ErrConfigRequired is returned when config is nil
+	ErrConfigRequired = errors.New("config is required")
+	// ErrPeerDisconnected is returned when peer disconnects
+	ErrPeerDisconnected = errors.New("disconnected from peer")
+)
+
+// Coordinator manages multiple P2P target peers.
 type Coordinator struct {
 	config *target.Config
 
@@ -30,14 +39,16 @@ type Coordinator struct {
 	mu sync.Mutex
 }
 
+// CoordinatorStatus tracks peer connection status.
 type CoordinatorStatus struct {
 	ConnectedPeers    int
 	DisconnectedPeers int
 }
 
+// NewCoordinator creates a new P2P target coordinator.
 func NewCoordinator(config *target.Config, log logrus.FieldLogger) (*Coordinator, error) {
 	if config == nil {
-		return nil, errors.New("config is required")
+		return nil, ErrConfigRequired
 	}
 
 	if err := config.Validate("p2p"); err != nil {
@@ -53,6 +64,7 @@ func NewCoordinator(config *target.Config, log logrus.FieldLogger) (*Coordinator
 	}, nil
 }
 
+// Start starts all configured P2P target peers.
 func (c *Coordinator) Start(ctx context.Context) error {
 	for _, nodeRecord := range c.config.NodeRecords {
 		c.mu.Lock()
@@ -93,7 +105,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 					return response
 				},
 				retry.Attempts(0),
-				retry.DelayType(func(n uint, err error, config *retry.Config) time.Duration {
+				retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
 					c.log.WithError(err).Debug("peer failed")
 
 					return c.config.RetryInterval
@@ -102,18 +114,15 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		}(nodeRecord, c.peers)
 	}
 
-	if err := c.startCrons(ctx); err != nil {
-		return err
-	}
+	return c.startCrons(ctx)
+}
 
+// Stop stops the coordinator and all peers.
+func (c *Coordinator) Stop(_ context.Context) error {
 	return nil
 }
 
-func (c *Coordinator) Stop(ctx context.Context) error {
-	return nil
-}
-
-func (c *Coordinator) status(ctx context.Context) CoordinatorStatus {
+func (c *Coordinator) status(_ context.Context) CoordinatorStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -181,6 +190,7 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 	return nil
 }
 
+// SendTransactionsToPeers sends transactions to all connected P2P target peers.
 func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions *mimicry.Transactions) error {
 	if transactions == nil || len(*transactions) == 0 {
 		return nil
@@ -206,7 +216,7 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 			typeStr = "set_code"
 		}
 
-		c.txCounters[typeStr] += 1
+		c.txCounters[typeStr]++
 	}
 	c.txCountersLock.Unlock()
 

@@ -1,3 +1,4 @@
+// Package target provides transaction target implementations for the bridge.
 package target
 
 import (
@@ -6,12 +7,23 @@ import (
 	"time"
 )
 
+var (
+	// ErrNodeRecordsRequired is returned when nodeRecords is empty for p2p mode
+	ErrNodeRecordsRequired = errors.New("nodeRecords is required for p2p mode")
+	// ErrRPCEndpointsRequired is returned when rpcEndpoints is empty for rpc mode
+	ErrRPCEndpointsRequired = errors.New("rpcEndpoints is required for rpc mode")
+	// ErrUnknownMode is returned when an unknown mode is specified
+	ErrUnknownMode = errors.New("unknown mode")
+)
+
+// Config holds the target configuration.
 type Config struct {
 	RetryInterval time.Duration `yaml:"retryInterval" default:"60s"`
 	NodeRecords   []string      `yaml:"nodeRecords"`
 	RPCEndpoints  []string      `yaml:"rpcEndpoints"`
 }
 
+// Validate validates the target configuration.
 func (c *Config) Validate(mode any) error {
 	modeStr, ok := mode.(string)
 	if !ok {
@@ -26,14 +38,14 @@ func (c *Config) Validate(mode any) error {
 	switch modeStr {
 	case "p2p":
 		if len(c.NodeRecords) == 0 {
-			return errors.New("nodeRecords is required for p2p mode")
+			return ErrNodeRecordsRequired
 		}
 	case "rpc":
 		if len(c.RPCEndpoints) == 0 {
-			return errors.New("rpcEndpoints is required for rpc mode")
+			return ErrRPCEndpointsRequired
 		}
 	default:
-		return fmt.Errorf("unknown mode: %s", modeStr)
+		return fmt.Errorf("%w: %s", ErrUnknownMode, modeStr)
 	}
 
 	return nil

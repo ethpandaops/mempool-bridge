@@ -2,6 +2,7 @@ package cache
 
 import "github.com/prometheus/client_golang/prometheus"
 
+// Metrics provides Prometheus metrics for cache operations.
 type Metrics struct {
 	sharedInsertionsTotal *prometheus.GaugeVec
 	sharedHitsTotal       *prometheus.GaugeVec
@@ -9,6 +10,7 @@ type Metrics struct {
 	sharedEvictionsTotal  *prometheus.GaugeVec
 }
 
+// NewMetrics creates a new Metrics instance.
 func NewMetrics(namespace string) *Metrics {
 	m := &Metrics{
 		sharedInsertionsTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -41,18 +43,22 @@ func NewMetrics(namespace string) *Metrics {
 	return m
 }
 
+// SetSharedInsertions sets the shared insertions metric.
 func (m *Metrics) SetSharedInsertions(count uint64, store string) {
 	m.sharedInsertionsTotal.WithLabelValues(store).Set(float64(count))
 }
 
+// SetSharedHits sets the shared hits metric.
 func (m *Metrics) SetSharedHits(count uint64, store string) {
 	m.sharedHitsTotal.WithLabelValues(store).Set(float64(count))
 }
 
+// SetSharedMisses sets the shared misses metric.
 func (m *Metrics) SetSharedMisses(count uint64, store string) {
 	m.sharedMissesTotal.WithLabelValues(store).Set(float64(count))
 }
 
+// SetSharedEvictions sets the shared evictions metric.
 func (m *Metrics) SetSharedEvictions(count uint64, store string) {
 	m.sharedEvictionsTotal.WithLabelValues(store).Set(float64(count))
 }
