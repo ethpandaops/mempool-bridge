@@ -6,7 +6,7 @@ Bridge mempool transactions between execution layer nodes using either devp2p (P
 
 - **Dual Mode Operation**: Support for both P2P (devp2p) and RPC (JSON-RPC) modes
 - **P2P Mode**: Direct peer-to-peer communication using ENR/enode records
-- **RPC Mode**: WebSocket subscriptions and HTTP/WebSocket transaction sending
+- **RPC Mode**: HTTP polling with `txpool_content` for transaction sourcing
 - **Transaction Filtering**: Optional filtering by to/from addresses
 - **Metrics**: Prometheus metrics for monitoring
 - **Automatic Retry**: Configurable retry intervals for failed connections
@@ -55,16 +55,17 @@ Uses Ethereum's devp2p protocol for direct peer-to-peer communication.
 **Example configuration**: See `example_config_p2p.yaml`
 
 #### RPC Mode (JSON-RPC)
-Uses JSON-RPC for transaction bridging via WebSocket subscriptions and HTTP/WebSocket endpoints.
+Uses JSON-RPC for transaction bridging via HTTP polling and RPC endpoints.
 
 **Source**:
-- Connects to WebSocket RPC endpoints (ws:// or wss://)
-- Subscribes to `newPendingTransactions` via `eth_subscribe`
-- Fetches transaction details via `eth_getTransactionByHash`
+- Connects to HTTP/HTTPS RPC endpoints
+- Polls `txpool_content` at regular intervals to fetch pending and queued transactions
+- Note: `eth_getPooledTransactions` is not available over RPC (P2P-only method)
 
 **Target**:
-- Connects to HTTP or WebSocket RPC endpoints
+- Connects to HTTP/HTTPS RPC endpoints
 - Sends transactions via `eth_sendRawTransaction`
+- Configurable concurrency: Send up to N transactions in parallel per peer (default: 10)
 
 **Example configuration**: See `example_config_rpc.yaml`
 
@@ -91,9 +92,10 @@ source:
     - enr:-IS4Q...
     - enode://dd47aff...
 
-  # RPC mode: WebSocket endpoints (ws:// or wss:// required for subscriptions)
+  # RPC mode: HTTP/HTTPS endpoints for txpool_content polling
   rpcEndpoints:
-    - ws://localhost:8546
+    - http://localhost:8545
+  pollingInterval: 5s       # Interval for polling txpool_content
 
   # Optional: Filter transactions by to/from addresses
   transactionFilters:
@@ -109,9 +111,10 @@ target:
   nodeRecords:
     - enr:-IS4Q...
 
-  # RPC mode: HTTP or WebSocket endpoints
+  # RPC mode: HTTP/HTTPS endpoints for sending transactions
   rpcEndpoints:
     - http://localhost:8545
+  sendConcurrency: 10       # Max concurrent transactions sent per peer (RPC mode only, default: 10)
 ```
 
 ### Mode Selection
@@ -120,7 +123,7 @@ Set the `mode` field to choose between P2P and RPC:
 - `mode: "p2p"` - Uses `nodeRecords` for both source and target
 - `mode: "rpc"` - Uses `rpcEndpoints` for both source and target
 
-**Note**: Source RPC endpoints must use WebSocket protocol (ws:// or wss://) for real-time transaction subscriptions. Target RPC endpoints can use either HTTP or WebSocket.
+**Note**: RPC mode uses HTTP/HTTPS endpoints for both source (polling `txpool_content`) and target (sending via `eth_sendRawTransaction`). Configure `pollingInterval` under `source` to adjust how frequently the txpool is polled.
 
 ## Architecture
 
@@ -131,7 +134,7 @@ Source Nodes (ENR/enode) → devp2p → Source Coordinator → Bridge → Target
 
 ### RPC Mode Flow
 ```
-Source Nodes (WebSocket) → eth_subscribe → Source Coordinator → Bridge → Target Coordinator → eth_sendRawTransaction → Target Nodes
+Source Nodes (HTTP) → txpool_content polling → Source Coordinator → Bridge → Target Coordinator → eth_sendRawTransaction → Target Nodes
 ```
 
 ## Metrics

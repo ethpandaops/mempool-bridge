@@ -18,9 +18,10 @@ var (
 
 // Config holds the target configuration.
 type Config struct {
-	RetryInterval time.Duration `yaml:"retryInterval" default:"60s"`
-	NodeRecords   []string      `yaml:"nodeRecords"`
-	RPCEndpoints  []string      `yaml:"rpcEndpoints"`
+	RetryInterval   time.Duration `yaml:"retryInterval" default:"60s"`
+	NodeRecords     []string      `yaml:"nodeRecords"`
+	RPCEndpoints    []string      `yaml:"rpcEndpoints"`
+	SendConcurrency int           `yaml:"sendConcurrency" default:"10"`
 }
 
 // Validate validates the target configuration.

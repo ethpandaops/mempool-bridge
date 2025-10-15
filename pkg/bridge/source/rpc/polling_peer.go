@@ -2,10 +2,10 @@ package rpc
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -16,10 +16,6 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var (
-	// ErrPollingPanicked is returned when polling handler panics
-	ErrPollingPanicked = errors.New("polling handler panicked")
-)
 
 // PollingPeer represents an HTTP RPC connection that polls txpool_content
 type PollingPeer struct {
@@ -45,14 +41,11 @@ type PollingPeer struct {
 	seenTxHashes map[string]bool
 	mu           sync.RWMutex
 
+	// track if initial pool load is complete
+	initialLoadComplete bool
+
 	// done channel for shutdown
 	done chan struct{}
-}
-
-// TxPoolContent represents the response from txpool_content RPC call
-type TxPoolContent struct {
-	Pending map[string]map[string]*types.Transaction `json:"pending"`
-	Queued  map[string]map[string]*types.Transaction `json:"queued"`
 }
 
 // NewPollingPeer creates a new HTTP polling peer for sourcing transactions
@@ -149,8 +142,8 @@ func (p *PollingPeer) pollTxPool(ctx context.Context) error {
 		return err
 	}
 
-	// Extract all transactions from pending and queued
-	allTxs := make([]*types.Transaction, 0)
+	// Extract all transaction hashes from pending and queued
+	allTxHashes := make([]string, 0)
 	txCount := 0
 	newTxCount := 0
 
@@ -158,8 +151,9 @@ func (p *PollingPeer) pollTxPool(ctx context.Context) error {
 	for _, txsByNonce := range content.Pending {
 		for _, tx := range txsByNonce {
 			txCount++
-			if p.isNewTransaction(tx.Hash().String()) {
-				allTxs = append(allTxs, tx)
+			txHash := tx.Hash().String()
+			if p.isNewTransaction(txHash) {
+				allTxHashes = append(allTxHashes, txHash)
 				newTxCount++
 			}
 		}
@@ -169,11 +163,30 @@ func (p *PollingPeer) pollTxPool(ctx context.Context) error {
 	for _, txsByNonce := range content.Queued {
 		for _, tx := range txsByNonce {
 			txCount++
-			if p.isNewTransaction(tx.Hash().String()) {
-				allTxs = append(allTxs, tx)
+			txHash := tx.Hash().String()
+			if p.isNewTransaction(txHash) {
+				allTxHashes = append(allTxHashes, txHash)
 				newTxCount++
 			}
 		}
+	}
+
+	p.mu.Lock()
+	isInitialLoad := !p.initialLoadComplete
+	if isInitialLoad {
+		p.initialLoadComplete = true
+	}
+	p.mu.Unlock()
+
+	if isInitialLoad {
+		p.log.WithFields(logrus.Fields{
+			"total_in_pool": txCount,
+			"new_txs":       newTxCount,
+			"already_seen":  txCount - newTxCount,
+		}).Info("initial pool load - adding to cache but NOT sending to targets")
+
+		// On initial load, just populate the cache without sending to targets
+		return p.populateCacheOnly(ctx, allTxHashes)
 	}
 
 	p.log.WithFields(logrus.Fields{
@@ -182,12 +195,12 @@ func (p *PollingPeer) pollTxPool(ctx context.Context) error {
 		"already_seen":  txCount - newTxCount,
 	}).Debug("polled txpool_content")
 
-	if len(allTxs) == 0 {
+	if len(allTxHashes) == 0 {
 		return nil
 	}
 
-	// Process new transactions
-	return p.processNewTransactions(ctx, allTxs)
+	// After initial load, fetch and process new transactions
+	return p.fetchAndProcessTransactions(ctx, allTxHashes)
 }
 
 // isNewTransaction checks if we've seen this transaction before and marks it as seen
@@ -316,6 +329,129 @@ func (p *PollingPeer) filterTransaction(_ context.Context, transaction *types.Tr
 	}
 
 	return true, nil
+}
+
+// populateCacheOnly fetches transactions and adds them to cache without forwarding to targets
+// This is used on initial connection to populate the cache with existing pool transactions
+//
+//nolint:unparam // Best-effort cache population, error always nil by design
+func (p *PollingPeer) populateCacheOnly(ctx context.Context, txHashes []string) error {
+	if len(txHashes) == 0 {
+		return nil
+	}
+
+	fetchedCount := 0
+	cacheHitCount := 0
+	errorCount := 0
+
+	for _, txHash := range txHashes {
+		// Check shared cache first
+		exists := p.sharedCache.Transaction.Get(txHash)
+		if exists != nil {
+			cacheHitCount++
+			continue
+		}
+
+		// Create a fresh context for fetching
+		fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+
+		// Fetch transaction via RPC
+		hash := common.HexToHash(txHash)
+		tx, pending, err := p.ethClient.TransactionByHash(fetchCtx, hash)
+		cancel()
+
+		if err != nil {
+			errorCount++
+			continue
+		}
+
+		if !pending {
+			continue
+		}
+
+		fetchedCount++
+
+		// Add to cache only - don't send to targets
+		p.sharedCache.Transaction.Set(tx.Hash().String(), tx, ttlcache.DefaultTTL)
+
+		// Track transaction type in metrics
+		p.metrics.IncReceivedTxCount(tx.Type())
+	}
+
+	p.log.WithFields(logrus.Fields{
+		"total_hashes": len(txHashes),
+		"fetched":      fetchedCount,
+		"cache_hits":   cacheHitCount,
+		"errors":       errorCount,
+	}).Info("initial cache population complete")
+
+	return nil
+}
+
+// fetchAndProcessTransactions fetches full transaction data and processes them for forwarding
+func (p *PollingPeer) fetchAndProcessTransactions(ctx context.Context, txHashes []string) error {
+	if len(txHashes) == 0 {
+		return nil
+	}
+
+	transactions := make([]*types.Transaction, 0, len(txHashes))
+	fetchedCount := 0
+	cacheHitCount := 0
+	notPendingCount := 0
+	errorCount := 0
+
+	for _, txHash := range txHashes {
+		// Check shared cache first
+		cached := p.sharedCache.Transaction.Get(txHash)
+		if cached != nil {
+			cacheHitCount++
+			if cachedValue := cached.Value(); cachedValue != nil {
+				transactions = append(transactions, cachedValue)
+			}
+			continue
+		}
+
+		// Create a fresh context for fetching
+		fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+
+		// Fetch transaction via RPC using eth_getTransactionByHash
+		hash := common.HexToHash(txHash)
+		tx, pending, err := p.ethClient.TransactionByHash(fetchCtx, hash)
+		cancel()
+
+		if err != nil {
+			errorCount++
+			p.log.WithFields(logrus.Fields{
+				"tx_hash":    txHash,
+				"error":      err.Error(),
+				"error_type": err,
+			}).Debug("failed to fetch transaction")
+			continue
+		}
+
+		if !pending {
+			notPendingCount++
+			continue
+		}
+
+		fetchedCount++
+		transactions = append(transactions, tx)
+	}
+
+	p.log.WithFields(logrus.Fields{
+		"total_hashes": len(txHashes),
+		"fetched":      fetchedCount,
+		"cache_hits":   cacheHitCount,
+		"not_pending":  notPendingCount,
+		"errors":       errorCount,
+		"to_process":   len(transactions),
+	}).Debug("fetched transactions from poll")
+
+	if len(transactions) > 0 {
+		return p.processNewTransactions(ctx, transactions)
+	}
+
+	return nil
 }
 
 // Stop stops the HTTP polling peer

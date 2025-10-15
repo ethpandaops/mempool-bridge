@@ -20,8 +20,6 @@ var (
 	ErrConfigRequired = errors.New("config is required")
 	// ErrRPCEndpointsRequired is returned when rpcEndpoints is empty
 	ErrRPCEndpointsRequired = errors.New("rpcEndpoints is required")
-	// ErrSubscriptionPanicked is returned when subscription handler panics
-	ErrSubscriptionPanicked = errors.New("subscription handler panicked")
 )
 
 // Coordinator manages multiple RPC peer connections for sourcing transactions
@@ -73,74 +71,16 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Start each endpoint based on its protocol
+	// Start each endpoint using polling mode (txpool_content)
 	for _, rpcEndpoint := range c.config.RPCEndpoints {
 		c.mu.Lock()
 		(*c.peers)[rpcEndpoint] = false
 		c.mu.Unlock()
 
-		protocol := DetectEndpointProtocol(rpcEndpoint)
-
-		switch protocol {
-		case ProtocolWebSocket:
-			c.startWebSocketPeer(ctx, rpcEndpoint)
-		case ProtocolHTTP:
-			c.startPollingPeer(ctx, rpcEndpoint)
-		case ProtocolUnknown:
-			c.log.WithField("endpoint", rpcEndpoint).Error("unsupported endpoint protocol")
-			continue
-		default:
-			c.log.WithField("endpoint", rpcEndpoint).Error("unsupported endpoint protocol")
-			continue
-		}
+		c.startPollingPeer(ctx, rpcEndpoint)
 	}
 
 	return c.startCrons(ctx)
-}
-
-// startWebSocketPeer starts a WebSocket subscription peer
-func (c *Coordinator) startWebSocketPeer(ctx context.Context, endpoint string) {
-	go func(endpoint string, peers *map[string]bool) {
-		_ = retry.Do(
-			func() error {
-				peer, err := NewPeer(ctx, c.log, endpoint, c.broadcast, c.cache, &c.config.TransactionFilters, c.metrics)
-				if err != nil {
-					return err
-				}
-
-				defer func() {
-					c.mu.Lock()
-					(*peers)[endpoint] = false
-					c.mu.Unlock()
-
-					if peer != nil {
-						if err = peer.Stop(ctx); err != nil {
-							c.log.WithError(err).Warn("failed to stop peer")
-						}
-					}
-				}()
-
-				disconnect, err := peer.Start(ctx)
-				if err != nil {
-					return err
-				}
-
-				c.mu.Lock()
-				(*peers)[endpoint] = true
-				c.mu.Unlock()
-
-				response := <-disconnect
-
-				return response
-			},
-			retry.Attempts(0),
-			retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
-				c.log.WithError(err).Debug("WebSocket peer failed")
-
-				return c.config.RetryInterval
-			}),
-		)
-	}(endpoint, c.peers)
 }
 
 // startPollingPeer starts an HTTP polling peer
@@ -148,7 +88,7 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 	go func(endpoint string, peers *map[string]bool) {
 		_ = retry.Do(
 			func() error {
-				peer, err := NewPollingPeer(
+				peer, err := NewPeer(
 					ctx,
 					c.log,
 					endpoint,
@@ -183,13 +123,17 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 				(*peers)[endpoint] = true
 				c.mu.Unlock()
 
-				response := <-disconnect
+				// Wait for disconnect signal (only if Start succeeded)
+				if disconnect != nil {
+					response := <-disconnect
+					return response
+				}
 
-				return response
+				return nil
 			},
 			retry.Attempts(0),
 			retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
-				c.log.WithError(err).Debug("HTTP polling peer failed")
+				c.log.WithError(err).Error("RPC polling peer failed, will retry")
 
 				return c.config.RetryInterval
 			}),
@@ -240,15 +184,6 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 		return err
 	}
 
-	if _, err := cr.Every("30s").Do(func() {
-		status := c.status(ctx)
-		c.log.WithFields(logrus.Fields{
-			"connected_peers":    status.ConnectedPeers,
-			"disconnected_peers": status.DisconnectedPeers,
-		}).Info("source RPC peer summary")
-	}); err != nil {
-		return err
-	}
 
 	cr.StartAsync()
 

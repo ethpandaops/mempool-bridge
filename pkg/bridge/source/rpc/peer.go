@@ -2,7 +2,9 @@ package rpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -12,12 +14,16 @@ import (
 	"github.com/ethpandaops/ethcore/pkg/execution/mimicry"
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source"
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source/cache"
-	"github.com/ethpandaops/mempool-bridge/pkg/processor"
 	"github.com/jellydator/ttlcache/v3"
 	"github.com/sirupsen/logrus"
 )
 
-// Peer represents an RPC connection to an Ethereum node for sourcing mempool transactions
+var (
+	// ErrPollingPanicked is returned when polling handler panics
+	ErrPollingPanicked = errors.New("polling handler panicked")
+)
+
+// Peer represents an HTTP RPC connection that polls txpool_content
 type Peer struct {
 	log logrus.FieldLogger
 
@@ -28,64 +34,57 @@ type Peer struct {
 	rpcClient *rpc.Client
 	ethClient *ethclient.Client
 
-	// don't send duplicate events from the same client
-	duplicateCache *cache.DuplicateCache
-	// shared cache between clients
+	// shared cache between all peers to prevent duplicate processing
 	sharedCache *cache.SharedCache
-
-	// Queue for normal transactions (non-blob)
-	normalTxProc *processor.BatchItemProcessor[common.Hash]
-	// Queue for blob transactions (prioritized)
-	blobTxProc *processor.BatchItemProcessor[common.Hash]
 
 	// metrics for tracking transaction types
 	metrics *source.Metrics
+
+	// polling configuration
+	pollInterval time.Duration
+
+	// local state for tracking seen transactions (for this peer only)
+	seenTxHashes map[string]bool
+	mu           sync.RWMutex
+
+	// track if initial pool load is complete
+	initialLoadComplete bool
 
 	// done channel for shutdown
 	done chan struct{}
 }
 
-// TransactionExporter handles exporting transaction hashes
-type TransactionExporter struct {
-	log     logrus.FieldLogger
-	handler func(ctx context.Context, items []*common.Hash) error
+// TxPoolContent represents the response from txpool_content RPC call
+type TxPoolContent struct {
+	Pending map[string]map[string]*types.Transaction `json:"pending"`
+	Queued  map[string]map[string]*types.Transaction `json:"queued"`
 }
 
-// NewTransactionExporter creates a new transaction exporter
-func NewTransactionExporter(log logrus.FieldLogger, handler func(ctx context.Context, items []*common.Hash) error) (TransactionExporter, error) {
-	return TransactionExporter{
-		log:     log,
-		handler: handler,
-	}, nil
-}
-
-// ExportItems exports transaction hashes.
-func (t TransactionExporter) ExportItems(ctx context.Context, items []*common.Hash) error {
-	return t.handler(ctx, items)
-}
-
-// Shutdown handles cleanup for the exporter.
-func (t TransactionExporter) Shutdown(_ context.Context) error {
-	return nil
-}
-
-// NewPeer creates a new RPC peer for sourcing transactions
-func NewPeer(_ context.Context, log logrus.FieldLogger, rpcEndpoint string, handler func(ctx context.Context, transactions *mimicry.Transactions) error, sharedCache *cache.SharedCache, txFilterConfig *source.TransactionFilterConfig, metrics *source.Metrics) (*Peer, error) {
-	duplicateCache := cache.NewDuplicateCache()
-
+// NewPeer creates a new HTTP polling peer for sourcing transactions
+func NewPeer(
+	_ context.Context,
+	log logrus.FieldLogger,
+	rpcEndpoint string,
+	handler func(ctx context.Context, transactions *mimicry.Transactions) error,
+	sharedCache *cache.SharedCache,
+	txFilterConfig *source.TransactionFilterConfig,
+	metrics *source.Metrics,
+	pollInterval time.Duration,
+) (*Peer, error) {
 	return &Peer{
-		log:            log.WithField("rpc_endpoint", rpcEndpoint),
+		log:            log.WithField("rpc_endpoint", rpcEndpoint).WithField("mode", "polling"),
 		rpcEndpoint:    rpcEndpoint,
 		handler:        handler,
 		txFilterConfig: txFilterConfig,
-		duplicateCache: duplicateCache,
 		sharedCache:    sharedCache,
 		metrics:        metrics,
+		pollInterval:   pollInterval,
+		seenTxHashes:   make(map[string]bool),
 		done:           make(chan struct{}),
 	}, nil
 }
 
-// Start begins the RPC peer subscription
+// Start begins the HTTP polling peer
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	response := make(chan error, 1)
 
@@ -98,51 +97,19 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	p.rpcClient = rpcClient
 	p.ethClient = ethclient.NewClient(rpcClient)
 
-	// Initialize normal transaction exporter
-	normalExporter, err := NewTransactionExporter(p.log.WithField("queue", "normal"), p.ExportNormalTransactions)
-	if err != nil {
-		return nil, err
-	}
+	p.log.WithField("poll_interval", p.pollInterval).Info("started HTTP polling peer")
 
-	// Initialize blob transaction exporter - blob transactions are processed one at a time
-	blobExporter, err := NewTransactionExporter(p.log.WithField("queue", "blob"), p.ExportBlobTransactions)
-	if err != nil {
-		return nil, err
-	}
-
-	// Configure normal transaction processor with larger batch size
-	p.normalTxProc = processor.NewBatchItemProcessor(normalExporter,
-		p.log.WithField("processor", "normal"),
-		processor.WithMaxQueueSize(100000),
-		processor.WithBatchTimeout(1*time.Second),
-		processor.WithExportTimeout(1*time.Second),
-		processor.WithMaxExportBatchSize(50000),
-	)
-
-	// Configure blob transaction processor with batch size 1 to process one at a time
-	p.blobTxProc = processor.NewBatchItemProcessor(blobExporter,
-		p.log.WithField("processor", "blob"),
-		processor.WithMaxQueueSize(10000),
-		processor.WithBatchTimeout(500*time.Millisecond),
-		processor.WithExportTimeout(500*time.Millisecond),
-		processor.WithMaxExportBatchSize(1), // Process only one blob at a time
-	)
-
-	p.duplicateCache.Start()
-
-	p.log.Debug("attempting to subscribe to pending transactions")
-
-	// Subscribe to pending transactions
+	// Start polling loop
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				p.log.WithField("panic", r).Error("panic in subscription handler")
-				response <- ErrSubscriptionPanicked
+				p.log.WithField("panic", r).Error("panic in polling handler")
+				response <- ErrPollingPanicked
 			}
 		}()
 
-		if err := p.subscribeToPendingTransactions(ctx, response); err != nil {
-			p.log.WithError(err).Error("subscription failed")
+		if err := p.pollLoop(ctx, response); err != nil {
+			p.log.WithError(err).Error("polling loop failed")
 			response <- err
 		}
 	}()
@@ -150,71 +117,204 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	return response, nil
 }
 
-// subscribeToPendingTransactions subscribes to newPendingTransactions via WebSocket
-func (p *Peer) subscribeToPendingTransactions(ctx context.Context, errorChan chan<- error) error {
-	// Create subscription channel
-	txHashChan := make(chan common.Hash, 10000)
+// pollLoop continuously polls txpool_content at regular intervals
+func (p *Peer) pollLoop(ctx context.Context, _ chan<- error) error {
+	ticker := time.NewTicker(p.pollInterval)
+	defer ticker.Stop()
 
-	// Subscribe to newPendingTransactions
-	sub, err := p.rpcClient.EthSubscribe(ctx, txHashChan, "newPendingTransactions")
-	if err != nil {
-		return err
+	// Do an immediate poll on startup
+	if err := p.pollTxPool(ctx); err != nil {
+		p.log.WithError(err).Warn("initial poll failed")
 	}
 
-	p.log.Info("subscribed to pending transactions")
-
-	// Handle subscription
 	for {
 		select {
 		case <-ctx.Done():
-			sub.Unsubscribe()
 			return ctx.Err()
 		case <-p.done:
-			sub.Unsubscribe()
 			return nil
-		case err := <-sub.Err():
-			if err != nil {
-				p.log.WithError(err).Error("subscription error")
-				errorChan <- err
-
-				return err
+		case <-ticker.C:
+			if err := p.pollTxPool(ctx); err != nil {
+				p.log.WithError(err).Warn("poll failed, will retry")
+				// Don't return error, just log and continue polling
 			}
-		case txHash := <-txHashChan:
-			// Check if we've already seen this transaction
-			exists := p.sharedCache.Transaction.Get(txHash.String())
-			if exists != nil {
-				continue
-			}
-
-			item := txHash
-			p.log.WithField("tx_hash", txHash.String()).Debug("received new pending transaction hash")
-			p.normalTxProc.Write(&item)
 		}
 	}
 }
 
-// Stop stops the RPC peer
-func (p *Peer) Stop(ctx context.Context) error {
-	close(p.done)
-	p.duplicateCache.Stop()
+// pollTxPool fetches txpool_content and processes new transactions
+func (p *Peer) pollTxPool(ctx context.Context) error {
+	pollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
-	if err := p.normalTxProc.Shutdown(ctx); err != nil {
+	var content TxPoolContent
+
+	// Call txpool_content RPC method
+	if err := p.rpcClient.CallContext(pollCtx, &content, "txpool_content"); err != nil {
 		return err
 	}
 
-	if err := p.blobTxProc.Shutdown(ctx); err != nil {
-		return err
+	// Extract all transaction hashes from pending and queued
+	allTxHashes := make([]string, 0)
+	txCount := 0
+	newTxCount := 0
+
+	// Process pending transactions
+	for _, txsByNonce := range content.Pending {
+		for _, tx := range txsByNonce {
+			txCount++
+			txHash := tx.Hash().String()
+			if p.isNewTransaction(txHash) {
+				allTxHashes = append(allTxHashes, txHash)
+				newTxCount++
+			}
+		}
 	}
 
-	if p.ethClient != nil {
-		p.ethClient.Close()
+	// Process queued transactions
+	for _, txsByNonce := range content.Queued {
+		for _, tx := range txsByNonce {
+			txCount++
+			txHash := tx.Hash().String()
+			if p.isNewTransaction(txHash) {
+				allTxHashes = append(allTxHashes, txHash)
+				newTxCount++
+			}
+		}
 	}
 
-	if p.rpcClient != nil {
-		p.rpcClient.Close()
+	p.mu.Lock()
+	isInitialLoad := !p.initialLoadComplete
+	if isInitialLoad {
+		p.initialLoadComplete = true
 	}
+	p.mu.Unlock()
+
+	if isInitialLoad {
+		// On initial load, just populate the cache without sending to targets
+		return p.populateCacheOnly(ctx, allTxHashes)
+	}
+
+	p.log.WithFields(logrus.Fields{
+		"total_in_pool": txCount,
+		"new_txs":       newTxCount,
+		"already_seen":  txCount - newTxCount,
+	}).Debug("polled txpool_content")
+
+	if len(allTxHashes) == 0 {
+		return nil
+	}
+
+	// After initial load, fetch and process new transactions
+	return p.fetchAndProcessTransactions(ctx, allTxHashes)
+}
+
+// isNewTransaction checks if we've seen this transaction before and marks it as seen
+func (p *Peer) isNewTransaction(txHash string) bool {
+	// Check sent cache first (prevents duplicate sends across all peers)
+	if exists := p.sharedCache.Sent.Transaction.Get(txHash); exists != nil {
+		return false
+	}
+
+	// Check local seen map
+	p.mu.RLock()
+	_, seen := p.seenTxHashes[txHash]
+	p.mu.RUnlock()
+
+	if seen {
+		return false
+	}
+
+	// Mark as seen in local map
+	p.mu.Lock()
+	p.seenTxHashes[txHash] = true
+	p.mu.Unlock()
+
+	return true
+}
+
+// processNewTransactions filters and forwards new transactions
+func (p *Peer) processNewTransactions(ctx context.Context, transactions []*types.Transaction) error {
+	newTxs := mimicry.Transactions{}
+
+	for _, tx := range transactions {
+		txHash := tx.Hash().String()
+
+		// Check if transaction was already sent to targets using sent cache
+		if exists := p.sharedCache.Sent.Transaction.Get(txHash); exists != nil {
+			p.log.WithField("tx_hash", txHash).Debug("transaction already sent to targets, skipping")
+			continue
+		}
+
+		// Track transaction type in metrics
+		p.metrics.IncReceivedTxCount(tx.Type())
+
+		// Get transaction type name
+		txTypeName := getTxTypeName(tx.Type())
+
+		logLevel := p.log.WithFields(logrus.Fields{
+			"tx_hash":      txHash,
+			"tx_size":      tx.Size(),
+			"tx_type":      tx.Type(),
+			"tx_type_name": txTypeName,
+			"gas_price":    tx.GasPrice(),
+			"gas_tip_cap":  tx.GasTipCap(),
+			"gas_fee_cap":  tx.GasFeeCap(),
+		})
+
+		// Highlight blob transactions
+		if tx.Type() == 0x03 {
+			logLevel = logLevel.WithField("blob_count", len(tx.BlobHashes()))
+			logLevel.Info("BLOB TRANSACTION fetched from poll")
+		} else {
+			logLevel.Debug("fetched transaction from poll")
+		}
+
+		// Apply filters
+		valid, err := p.filterTransaction(ctx, tx)
+		if err != nil {
+			p.log.WithError(err).Error("failed filtering transaction")
+			continue
+		}
+
+		if valid {
+			newTxs = append(newTxs, tx)
+		}
+	}
+
+	if len(newTxs) > 0 {
+		p.log.WithField("forwarding", len(newTxs)).Debug("forwarding polled transactions")
+
+		if err := p.handler(ctx, &newTxs); err != nil {
+			// Don't log here - let pollLoop handle logging
+			return err
+		}
+
+		// Mark transactions as sent in the sent cache
+		for _, tx := range newTxs {
+			p.sharedCache.Sent.Transaction.Set(tx.Hash().String(), time.Now(), ttlcache.DefaultTTL)
+		}
+	}
+
+	// Cleanup old seen hashes periodically (keep last 10000)
+	p.cleanupSeenHashes()
 
 	return nil
+}
+
+// cleanupSeenHashes removes old entries from the seen map to prevent unbounded growth
+func (p *Peer) cleanupSeenHashes() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// If we have more than 10000 entries, clear the oldest half
+	// This is a simple approach; could be improved with LRU
+	if len(p.seenTxHashes) > 10000 {
+		p.log.WithField("count", len(p.seenTxHashes)).Debug("cleaning up seen hashes")
+
+		// Clear all and rely on shared cache for recent transactions
+		p.seenTxHashes = make(map[string]bool)
+	}
 }
 
 // filterTransaction filters transactions based on configuration
@@ -247,215 +347,139 @@ func (p *Peer) filterTransaction(_ context.Context, transaction *types.Transacti
 	return true, nil
 }
 
-// ExportNormalTransactions handles non-blob transactions
-func (p *Peer) ExportNormalTransactions(ctx context.Context, items []*common.Hash) error {
-	go func() {
-		if len(items) == 0 {
-			return
-		}
+// populateCacheOnly fetches transactions and adds them to cache without forwarding to targets
+// This is used on initial connection to populate the cache with existing pool transactions
+//
+//nolint:unparam // Best-effort cache population, error always nil by design
+func (p *Peer) populateCacheOnly(_ context.Context, txHashes []string) error {
+	if len(txHashes) == 0 {
+		return nil
+	}
 
-		p.log.WithField("count", len(items)).Debug("exporting normal transactions")
+	// Just mark all hashes as seen in sent cache so we don't send them to targets
+	for _, txHash := range txHashes {
+		p.sharedCache.Sent.Transaction.Set(txHash, time.Now(), ttlcache.DefaultTTL)
+	}
 
-		// Filter out nil items
-		validItems := make([]*common.Hash, 0, len(items))
-
-		for _, item := range items {
-			if item != nil {
-				validItems = append(validItems, item)
-			}
-		}
-
-		if len(validItems) == 0 {
-			return
-		}
-
-		newTxs := mimicry.Transactions{}
-		fetchedCount := 0
-		cacheHitCount := 0
-		notPendingCount := 0
-		errorCount := 0
-
-		for _, item := range validItems {
-			exists := p.sharedCache.Transaction.Get(item.String())
-			if exists != nil {
-				cacheHitCount++
-				continue
-			}
-
-			// Create a fresh context for fetching to avoid using canceled parent context
-			fetchCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-			// Fetch transaction via RPC
-			tx, pending, err := p.ethClient.TransactionByHash(fetchCtx, *item)
-			cancel()
-
-			if err != nil {
-				errorCount++
-				// Log with more detail about the error type
-				p.log.WithFields(logrus.Fields{
-					"tx_hash":      item.String(),
-					"error":        err.Error(),
-					"error_type":   fmt.Sprintf("%T", err),
-					"fetched":      fetchedCount,
-					"errors":       errorCount,
-					"cache_hits":   cacheHitCount,
-					"not_pending":  notPendingCount,
-				}).Warn("failed to fetch transaction - might be blob tx not yet available")
-				continue
-			}
-
-			if !pending {
-				notPendingCount++
-				p.log.WithFields(logrus.Fields{
-					"tx_hash":     item.String(),
-					"tx_type":     tx.Type(),
-					"not_pending": notPendingCount,
-				}).Debug("transaction not in pending state (already mined or dropped)")
-				continue
-			}
-
-			fetchedCount++
-
-			// Add to cache
-			p.sharedCache.Transaction.Set(tx.Hash().String(), tx, ttlcache.DefaultTTL)
-
-			// Track transaction type in metrics
-			p.metrics.IncReceivedTxCount(tx.Type())
-
-			// Get transaction type name
-			txTypeName := getTxTypeName(tx.Type())
-
-			logLevel := p.log.WithFields(logrus.Fields{
-				"tx_hash":      tx.Hash().String(),
-				"tx_size":      tx.Size(),
-				"tx_type":      tx.Type(),
-				"tx_type_name": txTypeName,
-				"gas_price":    tx.GasPrice(),
-				"gas_tip_cap":  tx.GasTipCap(),
-				"gas_fee_cap":  tx.GasFeeCap(),
-			})
-
-			// Highlight blob transactions
-			if tx.Type() == 0x03 {
-				logLevel = logLevel.WithField("blob_count", len(tx.BlobHashes()))
-				logLevel.Info("🎯 BLOB TRANSACTION detected and fetched successfully")
-			} else {
-				logLevel.Debug("fetched and processing transaction")
-			}
-
-			valid, err := p.filterTransaction(ctx, tx)
-			if err != nil {
-				p.log.WithError(err).Error("failed filtering transaction")
-			}
-
-			if valid {
-				newTxs = append(newTxs, tx)
-			}
-		}
-
-		logEntry := p.log.WithFields(logrus.Fields{
-			"total_items":   len(validItems),
-			"fetched":       fetchedCount,
-			"cache_hits":    cacheHitCount,
-			"not_pending":   notPendingCount,
-			"errors":        errorCount,
-			"forwarding":    len(newTxs),
-		})
-
-		if errorCount > 0 {
-			logEntry.Warn("normal transaction batch complete WITH ERRORS - check if blob txs")
-		} else {
-			logEntry.Debug("normal transaction batch complete")
-		}
-
-		if len(newTxs) > 0 {
-			if err := p.handler(ctx, &newTxs); err != nil {
-				p.log.WithError(err).Error("failed handling transactions")
-			}
-		}
-	}()
+	p.log.WithField("total_hashes", len(txHashes)).Info("initial pool load - marked hashes as seen, NOT sending to targets")
 
 	return nil
 }
 
-// ExportBlobTransactions handles blob transactions with priority
-func (p *Peer) ExportBlobTransactions(ctx context.Context, items []*common.Hash) error {
-	go func() {
-		if len(items) == 0 {
-			return
-		}
+// fetchAndProcessTransactions fetches full transaction data and processes them for forwarding
+func (p *Peer) fetchAndProcessTransactions(ctx context.Context, txHashes []string) error {
+	if len(txHashes) == 0 {
+		return nil
+	}
 
-		// Process one blob at a time
-		item := items[0]
-		if item == nil {
-			return
-		}
+	// Fetch transactions concurrently to avoid delays
+	type fetchResult struct {
+		tx          *types.Transaction
+		notPending  bool
+		err         error
+		txHash      string
+	}
 
-		exists := p.sharedCache.Transaction.Get(item.String())
-		if exists != nil {
-			p.log.WithField("tx_hash", item.String()).Debug("blob transaction already in cache")
-			return // Already processed
-		}
+	results := make(chan fetchResult, len(txHashes))
+	concurrency := 50 // Limit concurrent requests
 
-		// Create a fresh context for fetching to avoid using canceled parent context
-		fetchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+	sem := make(chan struct{}, concurrency)
 
-		// Fetch transaction via RPC
-		tx, pending, err := p.ethClient.TransactionByHash(fetchCtx, *item)
-		if err != nil {
-			p.log.WithFields(logrus.Fields{
-				"tx_hash":    item.String(),
-				"error":      err.Error(),
-				"error_type": fmt.Sprintf("%T", err),
-			}).Warn("failed to fetch blob transaction")
+	for _, txHash := range txHashes {
+		go func(txHash string) {
+			sem <- struct{}{}        // Acquire semaphore
+			defer func() { <-sem }() // Release semaphore
 
-			return
-		}
+			// Create a fresh context for fetching
+			fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			defer cancel()
 
-		if !pending {
-			p.log.WithFields(logrus.Fields{
-				"tx_hash": item.String(),
-				"tx_type": tx.Type(),
-			}).Debug("blob transaction not in pending state (already mined or dropped)")
+			// Fetch transaction via RPC using eth_getTransactionByHash
+			hash := common.HexToHash(txHash)
+			tx, pending, err := p.ethClient.TransactionByHash(fetchCtx, hash)
 
-			return
-		}
-
-		// Add to cache
-		p.sharedCache.Transaction.Set(tx.Hash().String(), tx, ttlcache.DefaultTTL)
-
-		// Track transaction type in metrics
-		p.metrics.IncReceivedTxCount(tx.Type())
-
-		// Get transaction type name
-		txTypeName := getTxTypeName(tx.Type())
-
-		p.log.WithFields(logrus.Fields{
-			"tx_hash":      tx.Hash().String(),
-			"tx_size":      tx.Size(),
-			"tx_type":      tx.Type(),
-			"tx_type_name": txTypeName,
-			"gas_price":    tx.GasPrice(),
-			"gas_tip_cap":  tx.GasTipCap(),
-			"gas_fee_cap":  tx.GasFeeCap(),
-			"blob_count":   len(tx.BlobHashes()),
-		}).Info("fetched blob transaction (priority)")
-
-		valid, err := p.filterTransaction(ctx, tx)
-		if err != nil {
-			p.log.WithError(err).Error("failed filtering blob transaction")
-		}
-
-		if valid {
-			newTxs := mimicry.Transactions{tx}
-			if err := p.handler(ctx, &newTxs); err != nil {
-				p.log.WithError(err).Error("failed handling blob transaction")
-			} else {
-				p.log.WithField("tx_hash", tx.Hash().String()).Info("blob transaction forwarded successfully")
+			results <- fetchResult{
+				tx:         tx,
+				notPending: !pending,
+				err:        err,
+				txHash:     txHash,
 			}
+		}(txHash)
+	}
+
+	// Collect results
+	transactions := make([]*types.Transaction, 0, len(txHashes))
+	fetchedCount := 0
+	notPendingCount := 0
+	errorCount := 0
+
+	for i := 0; i < len(txHashes); i++ {
+		result := <-results
+
+		if result.err != nil {
+			errorCount++
+			// "not found" errors are expected when tx was mined/dropped between polls
+			if result.err.Error() == "not found" {
+				p.log.WithField("tx_hash", result.txHash).Trace("transaction no longer in mempool (mined or dropped)")
+			} else {
+				p.log.WithFields(logrus.Fields{
+					"tx_hash":    result.txHash,
+					"error":      result.err.Error(),
+					"error_type": fmt.Sprintf("%T", result.err),
+				}).Debug("failed to fetch transaction")
+			}
+			continue
 		}
-	}()
+
+		if result.notPending {
+			notPendingCount++
+			continue
+		}
+
+		fetchedCount++
+		transactions = append(transactions, result.tx)
+	}
+
+	// Count transactions by type
+	txByType := make(map[string]int)
+	for _, tx := range transactions {
+		txTypeName := getTxTypeName(tx.Type())
+		txByType[txTypeName]++
+	}
+
+	p.log.WithFields(logrus.Fields{
+		"total_hashes": len(txHashes),
+		"fetched":      fetchedCount,
+		"not_pending":  notPendingCount,
+		"errors":       errorCount,
+		"to_process":   len(transactions),
+	}).Debug("fetched transactions from poll")
+
+	if len(transactions) > 0 {
+		// Log new transactions found with type breakdown
+		logFields := logrus.Fields{"total": len(transactions)}
+		for txType, count := range txByType {
+			logFields[txType] = count
+		}
+		p.log.WithFields(logFields).Info("new transactions found from poll")
+
+		return p.processNewTransactions(ctx, transactions)
+	}
+
+	return nil
+}
+
+// Stop stops the HTTP polling peer
+func (p *Peer) Stop(_ context.Context) error {
+	close(p.done)
+
+	if p.ethClient != nil {
+		p.ethClient.Close()
+	}
+
+	if p.rpcClient != nil {
+		p.rpcClient.Close()
+	}
 
 	return nil
 }

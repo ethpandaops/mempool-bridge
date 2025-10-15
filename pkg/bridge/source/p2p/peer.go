@@ -103,7 +103,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 
 	p.duplicateCache.Start()
 
-	p.client.OnStatus(ctx, func(_ context.Context, _ *mimicry.Status) error {
+	p.client.OnStatus(ctx, func(_ context.Context, _ mimicry.Status) error {
 		return nil
 	})
 

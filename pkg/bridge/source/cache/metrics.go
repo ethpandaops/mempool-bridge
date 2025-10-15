@@ -8,10 +8,16 @@ type Metrics struct {
 	sharedHitsTotal       *prometheus.GaugeVec
 	sharedMissesTotal     *prometheus.GaugeVec
 	sharedEvictionsTotal  *prometheus.GaugeVec
+	registerer            prometheus.Registerer
 }
 
 // NewMetrics creates a new Metrics instance.
 func NewMetrics(namespace string) *Metrics {
+	return NewMetricsWithRegisterer(namespace, prometheus.DefaultRegisterer)
+}
+
+// NewMetricsWithRegisterer creates a new Metrics instance with a custom registerer.
+func NewMetricsWithRegisterer(namespace string, registerer prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		sharedInsertionsTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -33,12 +39,16 @@ func NewMetrics(namespace string) *Metrics {
 			Name:      "shared_evictions_total",
 			Help:      "Total number of shared evictions",
 		}, []string{"store"}),
+		registerer: registerer,
 	}
 
-	prometheus.MustRegister(m.sharedInsertionsTotal)
-	prometheus.MustRegister(m.sharedHitsTotal)
-	prometheus.MustRegister(m.sharedMissesTotal)
-	prometheus.MustRegister(m.sharedEvictionsTotal)
+	// Only register metrics if a registerer is provided
+	if registerer != nil {
+		registerer.MustRegister(m.sharedInsertionsTotal)
+		registerer.MustRegister(m.sharedHitsTotal)
+		registerer.MustRegister(m.sharedMissesTotal)
+		registerer.MustRegister(m.sharedEvictionsTotal)
+	}
 
 	return m
 }

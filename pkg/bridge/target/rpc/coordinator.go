@@ -74,7 +74,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		go func(endpoint string, peers *map[string]*Peer) {
 			_ = retry.Do(
 				func() error {
-					peer, err := NewPeer(ctx, c.log, endpoint)
+					peer, err := NewPeer(ctx, c.log, endpoint, c.config.SendConcurrency)
 					if err != nil {
 						return err
 					}
@@ -100,13 +100,17 @@ func (c *Coordinator) Start(ctx context.Context) error {
 					(*peers)[endpoint] = peer
 					c.mu.Unlock()
 
-					response := <-disconnect
+					// Wait for disconnect signal (only if Start succeeded)
+					if disconnect != nil {
+						response := <-disconnect
+						return response
+					}
 
-					return response
+					return nil
 				},
 				retry.Attempts(0),
 				retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
-					c.log.WithError(err).Debug("peer failed")
+					c.log.WithError(err).Error("target RPC peer failed, will retry")
 
 					return c.config.RetryInterval
 				}),
@@ -153,16 +157,8 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 		return err
 	}
 
+	// Log transaction statistics every 30s
 	if _, err := cr.Every("30s").Do(func() {
-		status := c.status(ctx)
-
-		// Log peer status
-		c.log.WithFields(logrus.Fields{
-			"connected_peers":    status.ConnectedPeers,
-			"disconnected_peers": status.DisconnectedPeers,
-		}).Info("target RPC peer summary")
-
-		// Handle transaction counters separately
 		c.txCountersLock.Lock()
 		txTotal := 0
 		txFields := logrus.Fields{}
@@ -176,7 +172,7 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 			// Only log if there were transactions
 			if txTotal > 0 {
 				txFields["total"] = txTotal
-				c.log.WithFields(txFields).Info("transactions sent to target RPC peers summary")
+				c.log.WithFields(txFields).Info("transactions accepted by targets")
 			}
 
 			// Reset counters after logging
@@ -198,34 +194,10 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 		return nil
 	}
 
-	// Count transactions by type for summary counters
-	c.txCountersLock.Lock()
-	for _, tx := range *transactions {
-		txType := tx.Type()
-		// Get transaction type string
-		typeStr := "unknown"
-
-		switch txType {
-		case 0x00: // LegacyTxType
-			typeStr = "legacy"
-		case 0x01: // AccessListTxType
-			typeStr = "access_list"
-		case 0x02: // DynamicFeeTxType
-			typeStr = "dynamic_fee"
-		case 0x03: // BlobTxType
-			typeStr = "blob"
-		case 0x04: // SetCodeTxType
-			typeStr = "set_code"
-		}
-
-		c.txCounters[typeStr]++
-	}
-	c.txCountersLock.Unlock()
-
 	// Debug level log for detailed troubleshooting if needed
 	c.log.WithField("count", len(*transactions)).Debug("sending transactions to RPC peers")
 
-	errg, ectx := errgroup.WithContext(ctx)
+	errg := &errgroup.Group{}
 
 	c.mu.Lock()
 	peers := *c.peers
@@ -236,7 +208,7 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 			p := peer // Create a copy of the loop variable to avoid race conditions
 
 			errg.Go(func() error {
-				err := p.SendTransactions(ectx, transactions)
+				result, err := p.SendTransactions(ctx, transactions)
 
 				status := "success"
 				if err != nil {
@@ -248,6 +220,31 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 				// Track individual transaction types
 				for _, tx := range *transactions {
 					c.metrics.AddTransactionByType(tx.Type(), status)
+				}
+
+				// Count only truly accepted transactions (not AlreadyKnown)
+				if result != nil && len(result.AcceptedByType) > 0 {
+					c.txCountersLock.Lock()
+					for txType, count := range result.AcceptedByType {
+						// Get transaction type string
+						typeStr := "unknown"
+
+						switch txType {
+						case 0x00: // LegacyTxType
+							typeStr = "legacy"
+						case 0x01: // AccessListTxType
+							typeStr = "access_list"
+						case 0x02: // DynamicFeeTxType
+							typeStr = "dynamic_fee"
+						case 0x03: // BlobTxType
+							typeStr = "blob"
+						case 0x04: // SetCodeTxType
+							typeStr = "set_code"
+						}
+
+						c.txCounters[typeStr] += count
+					}
+					c.txCountersLock.Unlock()
 				}
 
 				return err

@@ -9,17 +9,10 @@ mode: "rpc"
 # Source: Where to listen for mempool transactions
 source:
   retryInterval: 30s
-
-  # RPC mode: Supports both WebSocket and HTTP endpoints
-  # - WebSocket (ws://, wss://): Real-time subscriptions via eth_subscribe (recommended)
-  # - HTTP (http://, https://): Polling txpool_content at pollingInterval
-  # You can mix both types in the same config!
   rpcEndpoints:
-    - ws://localhost:8546          # WebSocket: real-time subscription
-    - http://node2.example.com:8545  # HTTP: polls txpool_content every 10s
-
-  # Polling interval for HTTP endpoints (default: 10s)
-  # Only used for http:// and https:// endpoints
+    - http://node1.example.com:8545 
+    - http://node2.example.com:8545 
+  # Polling interval to get new pooled transactions
   pollingInterval: 10s
 
   # Optional: Filter transactions by to/from addresses
@@ -32,8 +25,11 @@ source:
 # Target: Where to send transactions
 target:
   retryInterval: 30s
-
-  # RPC mode: HTTP or WebSocket endpoints for sending transactions via eth_sendRawTransaction
   rpcEndpoints:
     - http://localhost:8545
-    - http://node2.example.com:8545
+    - http://node3.example.com:8545
+
+  # Maximum number of concurrent transactions to send per peer (default: 10)
+  # Higher values = faster sending but more load on the target node
+  # Lower values = slower sending but less load on the target node
+  sendConcurrency: 10

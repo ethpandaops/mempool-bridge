@@ -19,18 +19,25 @@ var (
 type Peer struct {
 	log logrus.FieldLogger
 
-	rpcEndpoint string
-	ethClient   *ethclient.Client
+	rpcEndpoint     string
+	ethClient       *ethclient.Client
+	sendConcurrency int
 
 	ready bool
 }
 
 // NewPeer creates a new RPC target peer
-func NewPeer(_ context.Context, log logrus.FieldLogger, rpcEndpoint string) (*Peer, error) {
+func NewPeer(_ context.Context, log logrus.FieldLogger, rpcEndpoint string, sendConcurrency int) (*Peer, error) {
+	// Default to 10 if not set or invalid
+	if sendConcurrency <= 0 {
+		sendConcurrency = 10
+	}
+
 	p := Peer{
-		log:         log.WithField("rpc_endpoint", rpcEndpoint),
-		rpcEndpoint: rpcEndpoint,
-		ready:       false,
+		log:             log.WithField("rpc_endpoint", rpcEndpoint),
+		rpcEndpoint:     rpcEndpoint,
+		sendConcurrency: sendConcurrency,
+		ready:           false,
 	}
 
 	return &p, nil
@@ -77,65 +84,117 @@ func (p *Peer) Stop(_ context.Context) error {
 	return nil
 }
 
-// SendTransactions sends transactions via RPC
-func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
+// SendResult contains the results of sending transactions
+type SendResult struct {
+	AcceptedByType map[uint8]int // Count of truly accepted transactions by type (not AlreadyKnown)
+	TotalSent      int
+}
+
+// SendTransactions sends transactions via RPC concurrently
+func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Transactions) (*SendResult, error) {
+	result := &SendResult{
+		AcceptedByType: make(map[uint8]int),
+		TotalSent:      0,
+	}
+
 	if !p.ready {
 		p.log.Debug("peer is not ready")
-
-		return nil
+		return result, nil
 	}
 
 	if transactions == nil {
 		p.log.Debug("transactions is nil")
-
-		return nil
+		return result, nil
 	}
 
-	successCount := 0
-	errorCount := 0
+	// Send transactions concurrently with semaphore for rate limiting
+	type sendResult struct {
+		txHash  string
+		txType  uint8
+		err     error
+	}
+
+	results := make(chan sendResult, len(*transactions))
+	sem := make(chan struct{}, p.sendConcurrency)
 
 	for _, tx := range *transactions {
-		if err := p.ethClient.SendTransaction(ctx, tx); err != nil {
-			// Log but don't fail - some errors are expected (duplicate tx, nonce too low, etc.)
-			errStr := err.Error()
+		tx := tx // Capture loop variable
+		go func() {
+			sem <- struct{}{}        // Acquire semaphore
+			defer func() { <-sem }() // Release semaphore
 
-			// Check for common expected errors
-			if strings.Contains(errStr, "already known") ||
-				strings.Contains(errStr, "replacement transaction underpriced") ||
-				strings.Contains(errStr, "nonce too low") {
-				p.log.WithFields(logrus.Fields{
-					"tx_hash": tx.Hash().String(),
-					"error":   errStr,
-				}).Debug("transaction rejected (expected)")
-			} else {
-				p.log.WithFields(logrus.Fields{
-					"tx_hash": tx.Hash().String(),
-					"error":   errStr,
-				}).Warn("failed to send transaction")
+			err := p.ethClient.SendTransaction(ctx, tx)
+
+			results <- sendResult{
+				txHash: tx.Hash().String(),
+				txType: tx.Type(),
+				err:    err,
 			}
+		}()
+	}
 
-			errorCount++
-		} else {
+	// Collect results
+	successCount := 0
+	errorCount := 0
+	acceptedCount := 0 // Truly accepted (not AlreadyKnown)
+
+	for i := 0; i < len(*transactions); i++ {
+		res := <-results
+
+		if res.err == nil {
 			p.log.WithFields(logrus.Fields{
-				"tx_hash": tx.Hash().String(),
-				"tx_type": tx.Type(),
+				"tx_hash": res.txHash,
+				"tx_type": res.txType,
 			}).Debug("sent transaction")
 			successCount++
+			acceptedCount++
+			result.AcceptedByType[res.txType]++
+			continue
+		}
+
+		// Handle error cases
+		errStr := res.err.Error()
+
+		switch {
+		case strings.Contains(errStr, "already known"), strings.Contains(errStr, "AlreadyKnown"):
+			// AlreadyKnown means the target already has the transaction - count as success but not as accepted
+			p.log.WithFields(logrus.Fields{
+				"tx_hash": res.txHash,
+				"tx_type": res.txType,
+			}).Debug("transaction already known by target (success)")
+			successCount++
+		case strings.Contains(errStr, "replacement transaction underpriced"), strings.Contains(errStr, "nonce too low"):
+			// Other expected errors - log at debug but count as error
+			p.log.WithFields(logrus.Fields{
+				"tx_hash": res.txHash,
+				"error":   errStr,
+			}).Debug("transaction rejected (expected)")
+			errorCount++
+		default:
+			// Unexpected errors - log at warn
+			p.log.WithFields(logrus.Fields{
+				"tx_hash": res.txHash,
+				"error":   errStr,
+			}).Warn("failed to send transaction")
+			errorCount++
 		}
 	}
 
+	result.TotalSent = len(*transactions)
+
 	if successCount > 0 || errorCount > 0 {
 		p.log.WithFields(logrus.Fields{
-			"success": successCount,
-			"errors":  errorCount,
-			"total":   len(*transactions),
+			"success":  successCount,
+			"accepted": acceptedCount,
+			"errors":   errorCount,
+			"total":    len(*transactions),
 		}).Debug("transaction batch complete")
 	}
 
 	// Return error only if all transactions failed
 	if errorCount > 0 && successCount == 0 {
-		return ErrAllTransactionsFailed
+		return result, ErrAllTransactionsFailed
 	}
 
-	return nil
+	return result, nil
 }

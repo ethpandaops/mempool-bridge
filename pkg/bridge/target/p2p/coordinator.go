@@ -223,7 +223,7 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 	// Debug level log for detailed troubleshooting if needed
 	c.log.WithField("count", len(*transactions)).Debug("sending transactions to peers")
 
-	errg, ectx := errgroup.WithContext(ctx)
+	errg := &errgroup.Group{}
 
 	c.mu.Lock()
 	peers := *c.peers
@@ -234,7 +234,7 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 			p := peer // Create a copy of the loop variable to avoid race conditions
 
 			errg.Go(func() error {
-				err := p.SendTransactions(ectx, transactions)
+				err := p.SendTransactions(ctx, transactions)
 
 				status := "success"
 				if err != nil {

@@ -85,6 +85,20 @@ func (t *testBatchExporter[T]) getBatchCount() int {
 	return t.batchCount
 }
 
+func (t *testBatchExporter[T]) getErr() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.err
+}
+
+func (t *testBatchExporter[T]) getDroppedCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	return t.droppedCount
+}
+
 func TestNewBatchItemProcessorWithNilExporter(t *testing.T) {
 	bsp := NewBatchItemProcessor[TestItem](nil, nullLogger())
 
@@ -199,7 +213,10 @@ type stuckExporter[T TestItem] struct {
 // ExportItems waits for ctx to expire and returns that error.
 func (e *stuckExporter[T]) ExportItems(ctx context.Context, _ []*T) error {
 	<-ctx.Done()
+
+	e.mu.Lock()
 	e.err = ctx.Err()
+	e.mu.Unlock()
 
 	return ctx.Err()
 }
@@ -220,8 +237,8 @@ func TestBatchItemProcessorExportTimeout(t *testing.T) {
 
 	time.Sleep(1 * time.Millisecond)
 
-	if !errors.Is(exp.err, context.DeadlineExceeded) {
-		t.Errorf("context deadline error not returned: got %+v", exp.err)
+	if !errors.Is(exp.getErr(), context.DeadlineExceeded) {
+		t.Errorf("context deadline error not returned: got %+v", exp.getErr())
 	}
 }
 
@@ -340,7 +357,7 @@ func TestBatchItemProcessorDropBatchIfFailed(t *testing.T) {
 	assert.EqualError(t, err, "fail to export")
 
 	// First flush will fail, nothing should be exported.
-	assertMaxItemDiff(t, te.droppedCount, option.wantNumItems, 10)
+	assertMaxItemDiff(t, te.getDroppedCount(), option.wantNumItems, 10)
 	assert.Equal(t, 0, te.len())
 	assert.Equal(t, 0, te.getBatchCount())
 

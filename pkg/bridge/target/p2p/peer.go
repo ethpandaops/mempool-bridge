@@ -41,7 +41,7 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string) (*P
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	response := make(chan error)
 
-	p.client.OnStatus(ctx, func(_ context.Context, _ *mimicry.Status) error {
+	p.client.OnStatus(ctx, func(_ context.Context, _ mimicry.Status) error {
 		p.ready = true
 
 		return nil

@@ -19,6 +19,12 @@ type Metrics struct {
 
 // NewMetrics creates a new Metrics instance.
 func NewMetrics(namespace string) *Metrics {
+	return NewMetricsWithRegisterer(namespace, prometheus.DefaultRegisterer)
+}
+
+// NewMetricsWithRegisterer creates a new Metrics instance with a custom registerer.
+// Pass nil to skip metrics registration (useful for tests).
+func NewMetricsWithRegisterer(namespace string, registerer prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		peersTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -39,9 +45,11 @@ func NewMetrics(namespace string) *Metrics {
 		}, []string{"type"}),
 	}
 
-	prometheus.MustRegister(m.peersTotal)
-	prometheus.MustRegister(m.newTxHashesTotal)
-	prometheus.MustRegister(m.receivedTxTotal)
+	if registerer != nil {
+		registerer.MustRegister(m.peersTotal)
+		registerer.MustRegister(m.newTxHashesTotal)
+		registerer.MustRegister(m.receivedTxTotal)
+	}
 
 	return m
 }
