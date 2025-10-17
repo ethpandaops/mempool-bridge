@@ -1,6 +1,15 @@
 # Mempool Bridge
 
-Bridge mempool transactions between execution layer nodes.
+Bridge mempool transactions between execution layer nodes using either devp2p (P2P) or JSON-RPC protocols.
+
+## Features
+
+- **Dual Mode Operation**: Support for both P2P (devp2p) and RPC (JSON-RPC) modes
+- **P2P Mode**: Direct peer-to-peer communication using ENR/enode records
+- **RPC Mode**: HTTP polling with `txpool_content` for transaction sourcing
+- **Transaction Filtering**: Optional filtering by to/from addresses
+- **Metrics**: Prometheus metrics for monitoring
+- **Automatic Retry**: Configurable retry intervals for failed connections
 
 ## Getting Started
 
@@ -26,6 +35,117 @@ helm repo add ethereum-helm-charts https://ethpandaops.github.io/ethereum-helm-c
 
 helm install mempool-bridge ethereum-helm-charts/mempool-bridge -f your_values.yaml
 ```
+
+## Configuration
+
+### Modes
+
+Mempool Bridge supports two operation modes:
+
+#### P2P Mode (devp2p)
+Uses Ethereum's devp2p protocol for direct peer-to-peer communication.
+
+**Source**: Connects to nodes via ENR/enode records and listens for:
+- `OnNewPooledTransactionHashes`: Receives transaction hashes
+- `OnTransactions`: Receives full transactions
+- Fetches transaction details via `GetPooledTransactions`
+
+**Target**: Sends transactions directly to peers via devp2p
+
+**Example configuration**: See `example_config_p2p.yaml`
+
+#### RPC Mode (JSON-RPC)
+Uses JSON-RPC for transaction bridging via HTTP polling and RPC endpoints.
+
+**Source**:
+- Connects to HTTP/HTTPS RPC endpoints
+- Polls `txpool_content` at regular intervals to fetch pending and queued transactions
+- Note: `eth_getPooledTransactions` is not available over RPC (P2P-only method)
+
+**Target**:
+- Connects to HTTP/HTTPS RPC endpoints
+- Sends transactions via `eth_sendRawTransaction`
+- Configurable concurrency: Send up to N transactions in parallel per peer (default: 10)
+
+**Example configuration**: See `example_config_rpc.yaml`
+
+### Configuration Files
+
+Three example configurations are provided:
+
+1. **example_config_p2p.yaml**: P2P mode configuration
+2. **example_config_rpc.yaml**: RPC mode configuration
+3. **example_config_mixed.yaml**: Shows both P2P and RPC configurations (only one mode active at a time)
+
+### Key Configuration Options
+
+```yaml
+logging: "info"              # Log level: panic, fatal, warn, info, debug, trace
+metricsAddr: ":9090"         # Prometheus metrics endpoint
+mode: "p2p"                  # Operation mode: "p2p" or "rpc"
+
+source:
+  retryInterval: 30s         # Retry interval for failed connections
+
+  # P2P mode: ENR/enode records
+  nodeRecords:
+    - enr:-IS4Q...
+    - enode://dd47aff...
+
+  # RPC mode: HTTP/HTTPS endpoints for txpool_content polling
+  rpcEndpoints:
+    - http://localhost:8545
+  pollingInterval: 5s       # Interval for polling txpool_content
+
+  # Optional: Filter transactions by to/from addresses
+  transactionFilters:
+    to:
+      - 0x0000000000000000000000000000000000000000
+    from:
+      - 0x2222222222222222222222222222222222222222
+
+target:
+  retryInterval: 30s
+
+  # P2P mode: ENR/enode records
+  nodeRecords:
+    - enr:-IS4Q...
+
+  # RPC mode: HTTP/HTTPS endpoints for sending transactions
+  rpcEndpoints:
+    - http://localhost:8545
+  sendConcurrency: 10       # Max concurrent transactions sent per peer (RPC mode only, default: 10)
+```
+
+### Mode Selection
+
+Set the `mode` field to choose between P2P and RPC:
+- `mode: "p2p"` - Uses `nodeRecords` for both source and target
+- `mode: "rpc"` - Uses `rpcEndpoints` for both source and target
+
+**Note**: RPC mode uses HTTP/HTTPS endpoints for both source (polling `txpool_content`) and target (sending via `eth_sendRawTransaction`). Configure `pollingInterval` under `source` to adjust how frequently the txpool is polled.
+
+## Architecture
+
+### P2P Mode Flow
+```
+Source Nodes (ENR/enode) → devp2p → Source Coordinator → Bridge → Target Coordinator → devp2p → Target Nodes
+```
+
+### RPC Mode Flow
+```
+Source Nodes (HTTP) → txpool_content polling → Source Coordinator → Bridge → Target Coordinator → eth_sendRawTransaction → Target Nodes
+```
+
+## Metrics
+
+Prometheus metrics are exposed on the configured `metricsAddr` (default: `:9090`).
+
+Key metrics include:
+- Connection status (connected/disconnected peers)
+- Transaction counts by type (legacy, access_list, dynamic_fee, blob, set_code)
+- Success/failure rates
+- Transaction processing rates
 
 ## Contact
 

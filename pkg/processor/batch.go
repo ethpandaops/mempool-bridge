@@ -17,6 +17,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// ItemExporter exports batches of items.
 type ItemExporter[T any] interface {
 	// ExportItems exports a batch of items.
 	//
@@ -63,7 +64,7 @@ type BatchItemProcessorOptions struct {
 	BatchTimeout time.Duration
 
 	// ExportTimeout specifies the maximum duration for exporting items. If the timeout
-	// is reached, the export will be cancelled.
+	// is reached, the export will be canceled.
 	// The default value of ExportTimeout is 30000 msec.
 	ExportTimeout time.Duration
 
@@ -169,7 +170,7 @@ func (bvp *BatchItemProcessor[T]) Shutdown(ctx context.Context) error {
 
 			close(wait)
 		}()
-		// Wait until the wait group is done or the context is cancelled
+		// Wait until the wait group is done or the context is canceled
 		select {
 		case <-wait:
 		case <-ctx.Done():
@@ -192,7 +193,7 @@ func (bvp *BatchItemProcessor[T]) ForceFlush(ctx context.Context) error {
 			close(wait)
 		}()
 
-		// Wait until the export is finished or the context is cancelled/timed out
+		// Wait until the export is finished or the context is canceled/timed out
 		select {
 		case err = <-wait:
 		case <-ctx.Done():
@@ -361,7 +362,7 @@ func recoverSendOnClosedChan() {
 	panic(x)
 }
 
-func (bvp *BatchItemProcessor[T]) enqueueDrop(ctx context.Context, sd *T) bool {
+func (bvp *BatchItemProcessor[T]) enqueueDrop(_ context.Context, sd *T) bool {
 	// This ensures the bvp.queue<- below does not panic as the
 	// processor shuts down.
 	defer recoverSendOnClosedChan()

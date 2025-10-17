@@ -1,4 +1,5 @@
-package source
+// Package p2p provides P2P-based transaction source functionality.
+package p2p
 
 import (
 	"context"
@@ -8,13 +9,22 @@ import (
 
 	"github.com/avast/retry-go/v4"
 	"github.com/ethpandaops/ethcore/pkg/execution/mimicry"
+	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source"
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge/source/cache"
 	"github.com/go-co-op/gocron"
 	"github.com/sirupsen/logrus"
 )
 
+var (
+	// ErrConfigRequired is returned when config is nil
+	ErrConfigRequired = errors.New("config is required")
+	// ErrPeerDisconnected is returned when peer disconnects
+	ErrPeerDisconnected = errors.New("disconnected from peer")
+)
+
+// Coordinator manages multiple P2P source peers.
 type Coordinator struct {
-	config *Config
+	config *source.Config
 
 	broadcast func(ctx context.Context, transactions *mimicry.Transactions) error
 
@@ -23,35 +33,38 @@ type Coordinator struct {
 	cache *cache.SharedCache
 	peers *map[string]bool
 
-	metrics *Metrics
+	metrics *source.Metrics
 
 	mu sync.Mutex
 }
 
+// CoordinatorStatus tracks peer connection status.
 type CoordinatorStatus struct {
 	ConnectedPeers    int
 	DisconnectedPeers int
 }
 
-func NewCoordinator(config *Config, broadcast func(ctx context.Context, transactions *mimicry.Transactions) error, log logrus.FieldLogger) (*Coordinator, error) {
+// NewCoordinator creates a new P2P coordinator.
+func NewCoordinator(config *source.Config, broadcast func(ctx context.Context, transactions *mimicry.Transactions) error, log logrus.FieldLogger) (*Coordinator, error) {
 	if config == nil {
-		return nil, errors.New("config is required")
+		return nil, ErrConfigRequired
 	}
 
-	if err := config.Validate(); err != nil {
+	if err := config.Validate("p2p"); err != nil {
 		return nil, err
 	}
 
 	return &Coordinator{
 		config:    config,
 		broadcast: broadcast,
-		log:       log.WithField("component", "source"),
+		log:       log.WithField("component", "source-p2p"),
 		cache:     cache.NewSharedCache(),
 		peers:     &map[string]bool{},
-		metrics:   NewMetrics("mempool_bridge_source"),
+		metrics:   source.NewMetrics("mempool_bridge_source"),
 	}, nil
 }
 
+// Start starts all configured P2P source peers.
 func (c *Coordinator) Start(ctx context.Context) error {
 	for _, nodeRecord := range c.config.NodeRecords {
 		c.mu.Lock()
@@ -92,7 +105,7 @@ func (c *Coordinator) Start(ctx context.Context) error {
 					return response
 				},
 				retry.Attempts(0),
-				retry.DelayType(func(n uint, err error, config *retry.Config) time.Duration {
+				retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
 					c.log.WithError(err).Debug("peer failed")
 
 					return c.config.RetryInterval
@@ -101,18 +114,15 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		}(nodeRecord, c.peers)
 	}
 
-	if err := c.startCrons(ctx); err != nil {
-		return err
-	}
+	return c.startCrons(ctx)
+}
 
+// Stop stops the coordinator and all peers.
+func (c *Coordinator) Stop(_ context.Context) error {
 	return nil
 }
 
-func (c *Coordinator) Stop(ctx context.Context) error {
-	return nil
-}
-
-func (c *Coordinator) status(ctx context.Context) CoordinatorStatus {
+func (c *Coordinator) status(_ context.Context) CoordinatorStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

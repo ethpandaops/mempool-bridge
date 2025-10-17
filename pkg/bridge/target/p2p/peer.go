@@ -1,14 +1,15 @@
-package target
+package p2p
 
 import (
 	"context"
-	"errors"
+	"fmt"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/ethcore/pkg/execution/mimicry"
 )
 
+// Peer represents a P2P target connection to a single node.
 type Peer struct {
 	log logrus.FieldLogger
 
@@ -19,6 +20,7 @@ type Peer struct {
 	ready bool
 }
 
+// NewPeer creates a new P2P target peer.
 func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string) (*Peer, error) {
 	client, err := mimicry.New(ctx, log, nodeRecord, "mempool-bridge")
 	if err != nil {
@@ -35,16 +37,17 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string) (*P
 	return &p, nil
 }
 
+// Start starts the peer connection.
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	response := make(chan error)
 
-	p.client.OnStatus(ctx, func(ctx context.Context, status *mimicry.Status) error {
+	p.client.OnStatus(ctx, func(_ context.Context, _ mimicry.Status) error {
 		p.ready = true
 
 		return nil
 	})
 
-	p.client.OnDisconnect(ctx, func(ctx context.Context, reason *mimicry.Disconnect) error {
+	p.client.OnDisconnect(ctx, func(_ context.Context, reason *mimicry.Disconnect) error {
 		p.ready = false
 		str := "unknown"
 
@@ -56,7 +59,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 			"reason": str,
 		}).Debug("disconnected from client")
 
-		response <- errors.New("disconnected from peer (reason " + str + ")")
+		response <- fmt.Errorf("%w (reason %s)", ErrPeerDisconnected, str)
 
 		return nil
 	})
@@ -73,6 +76,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	return response, nil
 }
 
+// Stop stops the peer and cleans up resources.
 func (p *Peer) Stop(ctx context.Context) error {
 	if p.client != nil {
 		if err := p.client.Stop(ctx); err != nil {
@@ -83,6 +87,7 @@ func (p *Peer) Stop(ctx context.Context) error {
 	return nil
 }
 
+// SendTransactions sends transactions to the peer.
 func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
 	if !p.ready {
 		p.log.Debug("peer is not ready")

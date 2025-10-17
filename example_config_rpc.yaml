@@ -1,0 +1,35 @@
+logging: "info" # panic,fatal,warn,info,debug,trace
+metricsAddr: ":9090"
+
+# Mode selection: "p2p" or "rpc"
+# When mode is "rpc", ONLY rpcEndpoints are used (nodeRecords are ignored)
+# When mode is "p2p", ONLY nodeRecords are used (rpcEndpoints are ignored)
+mode: "rpc"
+
+# Source: Where to listen for mempool transactions
+source:
+  retryInterval: 30s
+  rpcEndpoints:
+    - http://node1.example.com:8545 
+    - http://node2.example.com:8545 
+  # Polling interval to get new pooled transactions
+  pollingInterval: 10s
+
+  # Optional: Filter transactions by to/from addresses
+  # transactionFilters:
+  #   to:
+  #     - 0x0000000000000000000000000000000000000000
+  #   from:
+  #     - 0x2222222222222222222222222222222222222222
+
+# Target: Where to send transactions
+target:
+  retryInterval: 30s
+  rpcEndpoints:
+    - http://localhost:8545
+    - http://node3.example.com:8545
+
+  # Maximum number of concurrent transactions to send per peer (default: 10)
+  # Higher values = faster sending but more load on the target node
+  # Lower values = slower sending but less load on the target node
+  sendConcurrency: 10

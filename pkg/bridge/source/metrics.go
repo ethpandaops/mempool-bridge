@@ -2,6 +2,11 @@ package source
 
 import "github.com/prometheus/client_golang/prometheus"
 
+const (
+	txTypeUnknown = "unknown"
+)
+
+// Metrics provides Prometheus metrics for source operations.
 type Metrics struct {
 	peersTotal *prometheus.GaugeVec
 
@@ -12,7 +17,14 @@ type Metrics struct {
 	receivedTxTotal *prometheus.CounterVec
 }
 
+// NewMetrics creates a new Metrics instance.
 func NewMetrics(namespace string) *Metrics {
+	return NewMetricsWithRegisterer(namespace, prometheus.DefaultRegisterer)
+}
+
+// NewMetricsWithRegisterer creates a new Metrics instance with a custom registerer.
+// Pass nil to skip metrics registration (useful for tests).
+func NewMetricsWithRegisterer(namespace string, registerer prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		peersTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
@@ -33,21 +45,26 @@ func NewMetrics(namespace string) *Metrics {
 		}, []string{"type"}),
 	}
 
-	prometheus.MustRegister(m.peersTotal)
-	prometheus.MustRegister(m.newTxHashesTotal)
-	prometheus.MustRegister(m.receivedTxTotal)
+	if registerer != nil {
+		registerer.MustRegister(m.peersTotal)
+		registerer.MustRegister(m.newTxHashesTotal)
+		registerer.MustRegister(m.receivedTxTotal)
+	}
 
 	return m
 }
 
+// SetPeers sets the peer count metric.
 func (m *Metrics) SetPeers(count int, status string) {
 	m.peersTotal.WithLabelValues(status).Set(float64(count))
 }
 
+// IncNewTxHashesCount increments the new transaction hashes counter.
 func (m *Metrics) IncNewTxHashesCount(txType byte) {
 	m.newTxHashesTotal.WithLabelValues(getTransactionTypeString(txType)).Inc()
 }
 
+// IncReceivedTxCount increments the received transaction counter.
 func (m *Metrics) IncReceivedTxCount(txType byte) {
 	m.receivedTxTotal.WithLabelValues(getTransactionTypeString(int(txType))).Inc()
 }
@@ -70,7 +87,7 @@ func getTransactionTypeString(txType interface{}) string {
 		case 0x04: // SetCodeTxType
 			typeStr = "set_code"
 		default:
-			typeStr = "unknown"
+			typeStr = txTypeUnknown
 		}
 	case int:
 		switch v {
@@ -85,10 +102,10 @@ func getTransactionTypeString(txType interface{}) string {
 		case 0x04: // SetCodeTxType
 			typeStr = "set_code"
 		default:
-			typeStr = "unknown"
+			typeStr = txTypeUnknown
 		}
 	default:
-		typeStr = "unknown"
+		typeStr = txTypeUnknown
 	}
 
 	return typeStr

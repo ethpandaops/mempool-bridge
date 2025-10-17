@@ -2,6 +2,11 @@ package target
 
 import "github.com/prometheus/client_golang/prometheus"
 
+const (
+	txTypeUnknown = "unknown"
+)
+
+// Metrics provides Prometheus metrics for target operations.
 type Metrics struct {
 	peersTotal        *prometheus.GaugeVec
 	transactionsTotal *prometheus.CounterVec
@@ -9,6 +14,7 @@ type Metrics struct {
 	transactionsByType *prometheus.CounterVec
 }
 
+// NewMetrics creates a new Metrics instance.
 func NewMetrics(namespace string) *Metrics {
 	m := &Metrics{
 		peersTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -35,14 +41,17 @@ func NewMetrics(namespace string) *Metrics {
 	return m
 }
 
+// SetPeers sets the peer count metric.
 func (m *Metrics) SetPeers(count int, status string) {
 	m.peersTotal.WithLabelValues(status).Set(float64(count))
 }
 
+// AddTransactions increments the transaction counter.
 func (m *Metrics) AddTransactions(count int, status string) {
 	m.transactionsTotal.WithLabelValues(status).Add(float64(count))
 }
 
+// AddTransactionByType increments the transaction type counter.
 func (m *Metrics) AddTransactionByType(txType uint8, status string) {
 	m.transactionsByType.WithLabelValues(getTransactionTypeString(int(txType)), status).Inc()
 }
@@ -65,7 +74,7 @@ func getTransactionTypeString(txType interface{}) string {
 		case 0x04: // SetCodeTxType
 			typeStr = "set_code"
 		default:
-			typeStr = "unknown"
+			typeStr = txTypeUnknown
 		}
 	case int:
 		switch v {
@@ -80,10 +89,10 @@ func getTransactionTypeString(txType interface{}) string {
 		case 0x04: // SetCodeTxType
 			typeStr = "set_code"
 		default:
-			typeStr = "unknown"
+			typeStr = txTypeUnknown
 		}
 	default:
-		typeStr = "unknown"
+		typeStr = txTypeUnknown
 	}
 
 	return typeStr

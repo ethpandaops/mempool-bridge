@@ -6,35 +6,55 @@ import (
 
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/go-co-op/gocron"
-	"github.com/savid/ttlcache/v3"
+	"github.com/jellydator/ttlcache/v3"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
+// SharedCache provides a shared transaction cache across peers.
 type SharedCache struct {
 	Transaction *ttlcache.Cache[string, *types.Transaction]
+	Sent        *SentCache
 
 	metrics *Metrics
 }
 
+// NewSharedCache creates a new SharedCache instance.
 func NewSharedCache() *SharedCache {
+	return NewSharedCacheWithRegisterer(prometheus.DefaultRegisterer)
+}
+
+// NewSharedCacheWithRegisterer creates a new SharedCache instance with a custom registerer.
+// Pass nil to skip metrics registration (useful for tests).
+func NewSharedCacheWithRegisterer(registerer prometheus.Registerer) *SharedCache {
+	metrics := NewMetricsWithRegisterer("mempool_bridge_source_cache", registerer)
+
 	return &SharedCache{
 		Transaction: ttlcache.New(
 			ttlcache.WithTTL[string, *types.Transaction](5 * time.Minute),
 		),
-		metrics: NewMetrics("mempool_bridge_source_cache"),
+		Sent:    newSentCacheWithMetrics(metrics),
+		metrics: metrics,
 	}
 }
 
+// Start begins the cache background processes.
 func (d *SharedCache) Start(ctx context.Context) error {
 	go d.Transaction.Start()
 
-	if err := d.startCrons(ctx); err != nil {
+	if err := d.Sent.Start(ctx); err != nil {
 		return err
 	}
 
-	return nil
+	return d.startCrons(ctx)
 }
 
-func (d *SharedCache) startCrons(ctx context.Context) error {
+// Stop stops the cache background processes.
+func (d *SharedCache) Stop() {
+	d.Transaction.Stop()
+	d.Sent.Stop()
+}
+
+func (d *SharedCache) startCrons(_ context.Context) error {
 	c := gocron.NewScheduler(time.Local)
 
 	if _, err := c.Every("5s").Do(func() {
