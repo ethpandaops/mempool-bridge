@@ -10,24 +10,22 @@ jobs:
   full_ci:
     strategy:
       matrix:
-        go_version: [ 1.23.x ]
+        go_version: [ 1.25.x ]
 
     runs-on: ubuntu-latest
 
     steps:
-      - name: checkout
-        uses: actions/checkout@ee0669bd1cc54295c223e0bb666b733df41de1c5 # v2.7.0
-
+      - name: Checkout
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
       - name: Set up Go
-        uses: actions/setup-go@6edd4406fa81c3da01a34fa6f6343087c207a568 # v3.5.0
+        uses: actions/setup-go@93397bea11091df50f3d7e59dc26a7711a8bcfbe # v4.1.0
         with:
           go-version: ${{ matrix.go_version }}
-        
-      - name: run tests
+          cache: true
+      - name: Run tests
         run: go test -json ./... > test.json
-
       - name: Annotate tests
         if: always()
-        uses: guyarb/golang-test-annotations@f54c4b21ff43e36adfe5fb7e6a31be8e2512abf4 # v0.5.1
+        uses: guyarb/golang-test-annotations@9ab2ea84a399d03ffd114bf49dd23ffadc794541 # v0.6.0
         with:
           test-results: test.json
