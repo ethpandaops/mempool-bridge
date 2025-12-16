@@ -4,6 +4,7 @@ go 1.25.1
 
 require (
 	github.com/avast/retry-go/v4 v4.7.0
+	github.com/avast/retry-go/v5 v5.0.0
 	github.com/creasty/defaults v1.8.0
 	github.com/ethereum/go-ethereum v1.16.4
 	github.com/ethpandaops/ethcore v0.0.0-20251001230846-2fd6473b510e
