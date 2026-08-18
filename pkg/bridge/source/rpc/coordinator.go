@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/avast/retry-go/v4"
@@ -85,6 +86,12 @@ func (c *Coordinator) Start(ctx context.Context) error {
 
 // startPollingPeer starts an HTTP polling peer
 func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
+	// Shared across every reconnect of this endpoint: a fresh Peer is
+	// constructed on each retry.Do iteration below, so the initial-load
+	// suppression must live here instead, or it would silently re-trigger
+	// on every reconnect.
+	initialLoadComplete := &atomic.Bool{}
+
 	go func(endpoint string, peers *map[string]bool) {
 		_ = retry.Do(
 			func() error {
@@ -97,6 +104,7 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 					&c.config.TransactionFilters,
 					c.metrics,
 					c.config.PollingInterval,
+					initialLoadComplete,
 				)
 				if err != nil {
 					return err

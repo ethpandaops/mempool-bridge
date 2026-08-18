@@ -202,8 +202,6 @@ func (b *Bridge) broadcast(ctx context.Context, transactions *mimicry.Transactio
 			continue
 		}
 
-		// Mark as sent
-		b.sentCache.Transaction.Set(txHash, time.Now(), ttlcache.DefaultTTL)
 		filteredTxs = append(filteredTxs, tx)
 	}
 
@@ -219,7 +217,19 @@ func (b *Bridge) broadcast(ctx context.Context, transactions *mimicry.Transactio
 		return nil
 	}
 
+	if err := b.t.SendTransactionsToPeers(ctx, &filteredTxs); err != nil {
+		return err
+	}
+
+	// Only mark transactions as sent once delivery has actually succeeded.
+	// Marking them beforehand meant a failed send, or a send that reached
+	// zero connected peers, still permanently suppressed the transaction
+	// from ever being retried.
+	for _, tx := range filteredTxs {
+		b.sentCache.Transaction.Set(tx.Hash().String(), time.Now(), ttlcache.DefaultTTL)
+	}
+
 	b.metrics.AddTransactions(len(filteredTxs))
 
-	return b.t.SendTransactionsToPeers(ctx, &filteredTxs)
+	return nil
 }

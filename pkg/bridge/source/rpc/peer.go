@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -47,8 +48,12 @@ type Peer struct {
 	seenTxHashes map[string]bool
 	mu           sync.RWMutex
 
-	// track if initial pool load is complete
-	initialLoadComplete bool
+	// track if initial pool load is complete. This is shared across
+	// reconnects of the same configured endpoint (owned by the coordinator,
+	// not this Peer instance), since a fresh Peer is constructed on every
+	// retry: without sharing this flag, every reconnect would look like a
+	// first-ever connection and silently suppress forwarding again.
+	initialLoadComplete *atomic.Bool
 
 	// done channel for shutdown
 	done chan struct{}
@@ -60,7 +65,11 @@ type TxPoolContent struct {
 	Queued  map[string]map[string]*types.Transaction `json:"queued"`
 }
 
-// NewPeer creates a new HTTP polling peer for sourcing transactions
+// NewPeer creates a new HTTP polling peer for sourcing transactions.
+// initialLoadComplete is owned by the caller and shared across reconnects of
+// the same endpoint; pass the same pointer in on every reconnect so the
+// initial-load suppression only ever applies once per endpoint, not once per
+// connection attempt.
 func NewPeer(
 	_ context.Context,
 	log logrus.FieldLogger,
@@ -70,17 +79,19 @@ func NewPeer(
 	txFilterConfig *source.TransactionFilterConfig,
 	metrics *source.Metrics,
 	pollInterval time.Duration,
+	initialLoadComplete *atomic.Bool,
 ) (*Peer, error) {
 	return &Peer{
-		log:            log.WithField("rpc_endpoint", rpcEndpoint).WithField("mode", "polling"),
-		rpcEndpoint:    rpcEndpoint,
-		handler:        handler,
-		txFilterConfig: txFilterConfig,
-		sharedCache:    sharedCache,
-		metrics:        metrics,
-		pollInterval:   pollInterval,
-		seenTxHashes:   make(map[string]bool),
-		done:           make(chan struct{}),
+		log:                 log.WithField("rpc_endpoint", rpcEndpoint).WithField("mode", "polling"),
+		rpcEndpoint:         rpcEndpoint,
+		handler:             handler,
+		txFilterConfig:      txFilterConfig,
+		sharedCache:         sharedCache,
+		metrics:             metrics,
+		pollInterval:        pollInterval,
+		seenTxHashes:        make(map[string]bool),
+		initialLoadComplete: initialLoadComplete,
+		done:                make(chan struct{}),
 	}, nil
 }
 
@@ -162,6 +173,10 @@ func (p *Peer) pollTxPool(ctx context.Context) error {
 	// Process pending transactions
 	for _, txsByNonce := range content.Pending {
 		for _, tx := range txsByNonce {
+			if tx == nil {
+				continue
+			}
+
 			txCount++
 			txHash := tx.Hash().String()
 			if p.isNewTransaction(txHash) {
@@ -174,6 +189,10 @@ func (p *Peer) pollTxPool(ctx context.Context) error {
 	// Process queued transactions
 	for _, txsByNonce := range content.Queued {
 		for _, tx := range txsByNonce {
+			if tx == nil {
+				continue
+			}
+
 			txCount++
 			txHash := tx.Hash().String()
 			if p.isNewTransaction(txHash) {
@@ -183,12 +202,7 @@ func (p *Peer) pollTxPool(ctx context.Context) error {
 		}
 	}
 
-	p.mu.Lock()
-	isInitialLoad := !p.initialLoadComplete
-	if isInitialLoad {
-		p.initialLoadComplete = true
-	}
-	p.mu.Unlock()
+	isInitialLoad := !p.initialLoadComplete.Swap(true)
 
 	if isInitialLoad {
 		// On initial load, just populate the cache without sending to targets
