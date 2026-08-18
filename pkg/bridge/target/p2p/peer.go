@@ -3,6 +3,7 @@ package p2p
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"github.com/sirupsen/logrus"
 
@@ -17,7 +18,7 @@ type Peer struct {
 
 	client *mimicry.Client
 
-	ready bool
+	ready atomic.Bool
 }
 
 // NewPeer creates a new P2P target peer.
@@ -31,7 +32,6 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string) (*P
 		log:        log.WithField("node_record", nodeRecord),
 		nodeRecord: nodeRecord,
 		client:     client,
-		ready:      false,
 	}
 
 	return &p, nil
@@ -42,13 +42,13 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	response := make(chan error)
 
 	p.client.OnStatus(ctx, func(_ context.Context, _ mimicry.Status) error {
-		p.ready = true
+		p.ready.Store(true)
 
 		return nil
 	})
 
 	p.client.OnDisconnect(ctx, func(_ context.Context, reason *mimicry.Disconnect) error {
-		p.ready = false
+		p.ready.Store(false)
 		str := "unknown"
 
 		if reason != nil {
@@ -89,7 +89,7 @@ func (p *Peer) Stop(ctx context.Context) error {
 
 // SendTransactions sends transactions to the peer.
 func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Transactions) error {
-	if !p.ready {
+	if !p.ready.Load() {
 		p.log.Debug("peer is not ready")
 
 		return nil
