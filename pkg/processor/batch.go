@@ -258,7 +258,16 @@ func (bvp *BatchItemProcessor[T]) exportItems(ctx context.Context) error {
 			"total_dropped": atomic.LoadUint32(&bvp.dropped),
 		}).Debug("exporting items")
 
-		err := bvp.e.ExportItems(ctx, bvp.batch)
+		// Hand the exporter its own copy of the batch. The interface docs
+		// say ExportItems is called synchronously, but nothing enforces
+		// that: an exporter that keeps working with the slice after
+		// returning (e.g. from a goroutine it spawned) would otherwise
+		// still be reading bvp.batch's backing array after it gets reused
+		// below.
+		items := make([]*T, l)
+		copy(items, bvp.batch)
+
+		err := bvp.e.ExportItems(ctx, items)
 
 		// A new batch is always created after exporting, even if the batch failed to be exported.
 		//

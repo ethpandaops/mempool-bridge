@@ -429,6 +429,82 @@ func TestBatchItemProcessorForceFlushCancellation(t *testing.T) {
 	}
 }
 
+// asyncExporter mimics an exporter that hands the items slice off to a
+// goroutine and returns before that goroutine is done reading it, which the
+// ItemExporter contract does not actually forbid at compile time. It is used
+// to check that exportItems does not reuse its backing array while such an
+// exporter might still be reading from a previous batch.
+type asyncExporter struct {
+	mu        sync.Mutex
+	batches   [][]int
+	wg        sync.WaitGroup
+	readDelay time.Duration
+}
+
+func (e *asyncExporter) ExportItems(_ context.Context, items []*int) error {
+	// Reserve this call's slot synchronously so the recorded order matches
+	// call order, regardless of which goroutine below finishes first.
+	e.mu.Lock()
+	idx := len(e.batches)
+	e.batches = append(e.batches, nil)
+	e.mu.Unlock()
+
+	e.wg.Add(1)
+
+	go func() {
+		defer e.wg.Done()
+
+		time.Sleep(e.readDelay)
+
+		vals := make([]int, len(items))
+		for i, p := range items {
+			vals[i] = *p
+		}
+
+		e.mu.Lock()
+		e.batches[idx] = vals
+		e.mu.Unlock()
+	}()
+
+	return nil
+}
+
+func (e *asyncExporter) Shutdown(context.Context) error { return nil }
+
+func TestExportItemsDoesNotReuseBackingArrayAcrossExports(t *testing.T) {
+	exp := &asyncExporter{readDelay: 150 * time.Millisecond}
+	bvp := NewBatchItemProcessor[int](exp, nullLogger(), WithMaxExportBatchSize(512), WithMaxQueueSize(512))
+
+	ctx := context.Background()
+
+	v1 := 111
+	bvp.batchMutex.Lock()
+	bvp.batch = append(bvp.batch, &v1)
+	bvp.batchMutex.Unlock()
+
+	require.NoError(t, bvp.exportItems(ctx))
+
+	// This append reuses bvp.batch's backing array. Before the fix, the
+	// first export's goroutine (still sleeping above) would end up reading
+	// this value instead of the one it was actually handed.
+	v2 := 222
+	bvp.batchMutex.Lock()
+	bvp.batch = append(bvp.batch, &v2)
+	bvp.batchMutex.Unlock()
+
+	require.NoError(t, bvp.exportItems(ctx))
+
+	exp.wg.Wait()
+
+	exp.mu.Lock()
+	batches := append([][]int{}, exp.batches...)
+	exp.mu.Unlock()
+
+	require.Len(t, batches, 2)
+	assert.Equal(t, []int{111}, batches[0])
+	assert.Equal(t, []int{222}, batches[1])
+}
+
 func nullLogger() *logrus.Logger {
 	log := logrus.New()
 	log.Out = io.Discard
