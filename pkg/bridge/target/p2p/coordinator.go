@@ -226,31 +226,35 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 	errg := &errgroup.Group{}
 
 	c.mu.Lock()
-	peers := *c.peers
+	snapshot := make([]*Peer, 0, len(*c.peers))
+
+	for _, peer := range *c.peers {
+		if peer != nil {
+			snapshot = append(snapshot, peer)
+		}
+	}
 	c.mu.Unlock()
 
-	for _, peer := range peers {
-		if peer != nil {
-			p := peer // Create a copy of the loop variable to avoid race conditions
+	for _, peer := range snapshot {
+		p := peer // Create a copy of the loop variable to avoid race conditions
 
-			errg.Go(func() error {
-				err := p.SendTransactions(ctx, transactions)
+		errg.Go(func() error {
+			err := p.SendTransactions(ctx, transactions)
 
-				status := "success"
-				if err != nil {
-					status = "failure"
-				}
+			status := "success"
+			if err != nil {
+				status = "failure"
+			}
 
-				c.metrics.AddTransactions(len(*transactions), status)
+			c.metrics.AddTransactions(len(*transactions), status)
 
-				// Track individual transaction types
-				for _, tx := range *transactions {
-					c.metrics.AddTransactionByType(tx.Type(), status)
-				}
+			// Track individual transaction types
+			for _, tx := range *transactions {
+				c.metrics.AddTransactionByType(tx.Type(), status)
+			}
 
-				return err
-			})
-		}
+			return err
+		})
 	}
 
 	return errg.Wait()

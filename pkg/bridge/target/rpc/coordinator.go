@@ -200,56 +200,60 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 	errg := &errgroup.Group{}
 
 	c.mu.Lock()
-	peers := *c.peers
+	snapshot := make([]*Peer, 0, len(*c.peers))
+
+	for _, peer := range *c.peers {
+		if peer != nil {
+			snapshot = append(snapshot, peer)
+		}
+	}
 	c.mu.Unlock()
 
-	for _, peer := range peers {
-		if peer != nil {
-			p := peer // Create a copy of the loop variable to avoid race conditions
+	for _, peer := range snapshot {
+		p := peer // Create a copy of the loop variable to avoid race conditions
 
-			errg.Go(func() error {
-				result, err := p.SendTransactions(ctx, transactions)
+		errg.Go(func() error {
+			result, err := p.SendTransactions(ctx, transactions)
 
-				status := "success"
-				if err != nil {
-					status = "failure"
-				}
+			status := "success"
+			if err != nil {
+				status = "failure"
+			}
 
-				c.metrics.AddTransactions(len(*transactions), status)
+			c.metrics.AddTransactions(len(*transactions), status)
 
-				// Track individual transaction types
-				for _, tx := range *transactions {
-					c.metrics.AddTransactionByType(tx.Type(), status)
-				}
+			// Track individual transaction types
+			for _, tx := range *transactions {
+				c.metrics.AddTransactionByType(tx.Type(), status)
+			}
 
-				// Count only truly accepted transactions (not AlreadyKnown)
-				if result != nil && len(result.AcceptedByType) > 0 {
-					c.txCountersLock.Lock()
-					for txType, count := range result.AcceptedByType {
-						// Get transaction type string
-						typeStr := "unknown"
+			// Count only truly accepted transactions (not AlreadyKnown)
+			if result != nil && len(result.AcceptedByType) > 0 {
+				c.txCountersLock.Lock()
+				for txType, count := range result.AcceptedByType {
+					// Get transaction type string
+					typeStr := "unknown"
 
-						switch txType {
-						case 0x00: // LegacyTxType
-							typeStr = "legacy"
-						case 0x01: // AccessListTxType
-							typeStr = "access_list"
-						case 0x02: // DynamicFeeTxType
-							typeStr = "dynamic_fee"
-						case 0x03: // BlobTxType
-							typeStr = "blob"
-						case 0x04: // SetCodeTxType
-							typeStr = "set_code"
-						}
-
-						c.txCounters[typeStr] += count
+					switch txType {
+					case 0x00: // LegacyTxType
+						typeStr = "legacy"
+					case 0x01: // AccessListTxType
+						typeStr = "access_list"
+					case 0x02: // DynamicFeeTxType
+						typeStr = "dynamic_fee"
+					case 0x03: // BlobTxType
+						typeStr = "blob"
+					case 0x04: // SetCodeTxType
+						typeStr = "set_code"
 					}
-					c.txCountersLock.Unlock()
-				}
 
-				return err
-			})
-		}
+					c.txCounters[typeStr] += count
+				}
+				c.txCountersLock.Unlock()
+			}
+
+			return err
+		})
 	}
 
 	return errg.Wait()
