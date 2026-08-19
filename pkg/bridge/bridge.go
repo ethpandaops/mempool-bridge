@@ -6,9 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/ethpandaops/ethcore/pkg/execution/mimicry"
@@ -135,19 +132,23 @@ func (b *Bridge) Start(ctx context.Context) error {
 		return err
 	}
 
-	cancel := make(chan os.Signal, 1)
-	signal.Notify(cancel, syscall.SIGTERM, syscall.SIGINT)
+	<-ctx.Done()
 
-	sig := <-cancel
-	b.log.Printf("Caught signal: %v", sig)
+	b.log.Printf("Caught signal, shutting down...")
 
-	b.log.Printf("Shutting down...")
+	// Use a fresh, independently-bounded context for the stop phase rather
+	// than the now-cancelled ctx above: Stop implementations wait on that
+	// context to bound how long they give peers to drain, and an
+	// already-cancelled context would make that wait return immediately
+	// instead of actually waiting for in-flight work to finish.
+	stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
-	if err := b.s.Stop(ctx); err != nil {
+	if err := b.s.Stop(stopCtx); err != nil {
 		b.log.Printf("failed to stop source: %s", err)
 	}
 
-	if err := b.t.Stop(ctx); err != nil {
+	if err := b.t.Stop(stopCtx); err != nil {
 		b.log.Printf("failed to stop target: %s", err)
 	}
 
