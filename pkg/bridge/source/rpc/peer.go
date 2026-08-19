@@ -240,8 +240,13 @@ func (p *Peer) processNewTransactions(ctx context.Context, transactions []*types
 	for _, tx := range transactions {
 		txHash := tx.Hash().String()
 
-		// Check if transaction was already sent to targets using sent cache
-		if exists := p.sharedCache.Sent.Transaction.Get(txHash); exists != nil {
+		// GetOrSet atomically checks-and-claims this hash in one operation,
+		// so two peers observing the same transaction can't both decide to
+		// forward it (a plain Get then later Set has a window where that
+		// can happen). The claim is released below whenever we end up not
+		// actually delivering this transaction, so a legitimate retry
+		// isn't permanently suppressed.
+		if _, existed := p.sharedCache.Sent.Transaction.GetOrSet(txHash, time.Now()); existed {
 			p.log.WithField("tx_hash", txHash).Debug("transaction already sent to targets, skipping")
 			continue
 		}
@@ -274,11 +279,16 @@ func (p *Peer) processNewTransactions(ctx context.Context, transactions []*types
 		valid, err := p.filterTransaction(ctx, tx)
 		if err != nil {
 			p.log.WithError(err).Error("failed filtering transaction")
+			p.sharedCache.Sent.Transaction.Delete(txHash)
+
 			continue
 		}
 
 		if valid {
 			newTxs = append(newTxs, tx)
+		} else {
+			// Not forwarding this one after all: release the claim.
+			p.sharedCache.Sent.Transaction.Delete(txHash)
 		}
 	}
 
@@ -286,13 +296,15 @@ func (p *Peer) processNewTransactions(ctx context.Context, transactions []*types
 		p.log.WithField("forwarding", len(newTxs)).Debug("forwarding polled transactions")
 
 		if err := p.handler(ctx, &newTxs); err != nil {
+			// Delivery failed: release the claims so these transactions
+			// can be retried on the next observation instead of being
+			// silently suppressed forever.
+			for _, tx := range newTxs {
+				p.sharedCache.Sent.Transaction.Delete(tx.Hash().String())
+			}
+
 			// Don't log here - let pollLoop handle logging
 			return err
-		}
-
-		// Mark transactions as sent in the sent cache
-		for _, tx := range newTxs {
-			p.sharedCache.Sent.Transaction.Set(tx.Hash().String(), time.Now(), ttlcache.DefaultTTL)
 		}
 	}
 
