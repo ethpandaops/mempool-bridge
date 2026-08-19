@@ -10,6 +10,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// transactionCacheCapacity bounds the shared Transaction cache as
+// defense-in-depth against unbounded growth if its eviction goroutine is
+// ever not running (see SharedCache.Start).
+const transactionCacheCapacity = 100_000
+
 // SharedCache provides a shared transaction cache across peers.
 type SharedCache struct {
 	Transaction *ttlcache.Cache[string, *types.Transaction]
@@ -30,7 +35,8 @@ func NewSharedCacheWithRegisterer(registerer prometheus.Registerer) *SharedCache
 
 	return &SharedCache{
 		Transaction: ttlcache.New(
-			ttlcache.WithTTL[string, *types.Transaction](5 * time.Minute),
+			ttlcache.WithTTL[string, *types.Transaction](5*time.Minute),
+			ttlcache.WithCapacity[string, *types.Transaction](transactionCacheCapacity),
 		),
 		Sent:    newSentCacheWithMetrics(metrics),
 		metrics: metrics,
