@@ -9,6 +9,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+// sentCacheCapacity bounds the sent cache as defense-in-depth against
+// unbounded growth: with a TTL but no capacity bound, a sustained-enough
+// send rate can grow the cache faster than entries expire.
+const sentCacheCapacity = 100_000
+
 // SentCache tracks transactions that have been successfully sent to targets
 // to prevent duplicate forwarding across all source peers
 type SentCache struct {
@@ -27,7 +32,8 @@ func NewSentCache() *SentCache {
 func NewSentCacheWithRegisterer(registerer prometheus.Registerer) *SentCache {
 	return &SentCache{
 		Transaction: ttlcache.New(
-			ttlcache.WithTTL[string, time.Time](5 * time.Minute),
+			ttlcache.WithTTL[string, time.Time](5*time.Minute),
+			ttlcache.WithCapacity[string, time.Time](sentCacheCapacity),
 		),
 		metrics: NewMetricsWithRegisterer("mempool_bridge_sent_cache", registerer),
 	}
@@ -38,7 +44,8 @@ func NewSentCacheWithRegisterer(registerer prometheus.Registerer) *SentCache {
 func newSentCacheWithMetrics(metrics *Metrics) *SentCache {
 	return &SentCache{
 		Transaction: ttlcache.New(
-			ttlcache.WithTTL[string, time.Time](5 * time.Minute),
+			ttlcache.WithTTL[string, time.Time](5*time.Minute),
+			ttlcache.WithCapacity[string, time.Time](sentCacheCapacity),
 		),
 		metrics: metrics,
 	}

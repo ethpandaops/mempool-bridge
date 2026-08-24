@@ -23,6 +23,17 @@ var (
 	ErrPollingPanicked = errors.New("polling handler panicked")
 )
 
+// seenTxHashesTTL and seenTxHashesCapacity bound the local seen-hash cache.
+// Individual entries expire on their own schedule instead of the whole map
+// being wiped at once: a size-triggered full wipe would clear recently-seen
+// entries for transactions still legitimately pending right alongside
+// stale ones, reopening a re-forward window if the shared Sent cache's own
+// TTL for that hash had also separately expired by then.
+const (
+	seenTxHashesTTL      = 5 * time.Minute
+	seenTxHashesCapacity = 10_000
+)
+
 // Peer represents an HTTP RPC connection that polls txpool_content
 type Peer struct {
 	log logrus.FieldLogger
@@ -44,8 +55,9 @@ type Peer struct {
 	pollInterval time.Duration
 
 	// local state for tracking seen transactions (for this peer only)
-	seenTxHashes map[string]bool
-	mu           sync.RWMutex
+	seenTxHashes *ttlcache.Cache[string, struct{}]
+
+	mu sync.Mutex
 
 	// track if initial pool load is complete
 	initialLoadComplete bool
@@ -79,14 +91,19 @@ func NewPeer(
 		sharedCache:    sharedCache,
 		metrics:        metrics,
 		pollInterval:   pollInterval,
-		seenTxHashes:   make(map[string]bool),
-		done:           make(chan struct{}),
+		seenTxHashes: ttlcache.New(
+			ttlcache.WithTTL[string, struct{}](seenTxHashesTTL),
+			ttlcache.WithCapacity[string, struct{}](seenTxHashesCapacity),
+		),
+		done: make(chan struct{}),
 	}, nil
 }
 
 // Start begins the HTTP polling peer
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 	response := make(chan error, 1)
+
+	go p.seenTxHashes.Start()
 
 	// Connect to RPC endpoint
 	rpcClient, err := rpc.DialContext(ctx, p.rpcEndpoint)
@@ -216,19 +233,10 @@ func (p *Peer) isNewTransaction(txHash string) bool {
 		return false
 	}
 
-	// Check local seen map
-	p.mu.RLock()
-	_, seen := p.seenTxHashes[txHash]
-	p.mu.RUnlock()
-
-	if seen {
+	// Check and mark the local seen cache in one step.
+	if _, existed := p.seenTxHashes.GetOrSet(txHash, struct{}{}); existed {
 		return false
 	}
-
-	// Mark as seen in local map
-	p.mu.Lock()
-	p.seenTxHashes[txHash] = true
-	p.mu.Unlock()
 
 	return true
 }
@@ -296,25 +304,7 @@ func (p *Peer) processNewTransactions(ctx context.Context, transactions []*types
 		}
 	}
 
-	// Cleanup old seen hashes periodically (keep last 10000)
-	p.cleanupSeenHashes()
-
 	return nil
-}
-
-// cleanupSeenHashes removes old entries from the seen map to prevent unbounded growth
-func (p *Peer) cleanupSeenHashes() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// If we have more than 10000 entries, clear the oldest half
-	// This is a simple approach; could be improved with LRU
-	if len(p.seenTxHashes) > 10000 {
-		p.log.WithField("count", len(p.seenTxHashes)).Debug("cleaning up seen hashes")
-
-		// Clear all and rely on shared cache for recent transactions
-		p.seenTxHashes = make(map[string]bool)
-	}
 }
 
 // filterTransaction filters transactions based on configuration
@@ -472,6 +462,8 @@ func (p *Peer) fetchAndProcessTransactions(ctx context.Context, txHashes []strin
 // Stop stops the HTTP polling peer
 func (p *Peer) Stop(_ context.Context) error {
 	close(p.done)
+
+	p.seenTxHashes.Stop()
 
 	if p.ethClient != nil {
 		p.ethClient.Close()
