@@ -16,6 +16,7 @@ type SharedCache struct {
 	Sent        *SentCache
 
 	metrics *Metrics
+	cron    *gocron.Scheduler
 }
 
 // NewSharedCache creates a new SharedCache instance.
@@ -52,6 +53,10 @@ func (d *SharedCache) Start(ctx context.Context) error {
 func (d *SharedCache) Stop() {
 	d.Transaction.Stop()
 	d.Sent.Stop()
+
+	if d.cron != nil {
+		d.cron.Stop()
+	}
 }
 
 func (d *SharedCache) startCrons(_ context.Context) error {
@@ -68,6 +73,8 @@ func (d *SharedCache) startCrons(_ context.Context) error {
 	}
 
 	c.StartAsync()
+
+	d.cron = c
 
 	return nil
 }

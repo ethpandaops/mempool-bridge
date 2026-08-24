@@ -15,6 +15,7 @@ type SentCache struct {
 	Transaction *ttlcache.Cache[string, time.Time]
 
 	metrics *Metrics
+	cron    *gocron.Scheduler
 }
 
 // NewSentCache creates a new sent transaction cache
@@ -54,6 +55,10 @@ func (s *SentCache) Start(ctx context.Context) error {
 // Stop stops the sent cache
 func (s *SentCache) Stop() {
 	s.Transaction.Stop()
+
+	if s.cron != nil {
+		s.cron.Stop()
+	}
 }
 
 // startCrons starts periodic metrics updates
@@ -71,6 +76,8 @@ func (s *SentCache) startCrons(_ context.Context) error {
 	}
 
 	c.StartAsync()
+
+	s.cron = c
 
 	return nil
 }
