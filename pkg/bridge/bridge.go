@@ -54,6 +54,8 @@ type Bridge struct {
 	sentCache *cache.SentCache
 
 	metrics *Metrics
+
+	metricsServer *http.Server
 }
 
 // New creates a new Bridge instance with the given logger and configuration.
@@ -151,6 +153,12 @@ func (b *Bridge) Start(ctx context.Context) error {
 		b.log.Printf("failed to stop target: %s", err)
 	}
 
+	if b.metricsServer != nil {
+		if err := b.metricsServer.Shutdown(ctx); err != nil {
+			b.log.Printf("failed to stop metrics server: %s", err)
+		}
+	}
+
 	// Stop sent cache
 	b.sentCache.Stop()
 
@@ -159,18 +167,24 @@ func (b *Bridge) Start(ctx context.Context) error {
 
 // ServeMetrics starts the metrics HTTP server.
 func (b *Bridge) ServeMetrics(_ context.Context) error {
+	server := &http.Server{
+		Addr:              b.Cfg.MetricsAddr,
+		ReadHeaderTimeout: 15 * time.Second,
+		Handler:           promhttp.Handler(),
+	}
+
+	b.metricsServer = server
+
 	go func() {
-		server := &http.Server{
-			Addr:              b.Cfg.MetricsAddr,
-			ReadHeaderTimeout: 15 * time.Second,
-		}
-
-		server.Handler = promhttp.Handler()
-
 		b.log.Infof("serving metrics at %s", b.Cfg.MetricsAddr)
 
-		if err := server.ListenAndServe(); err != nil {
-			b.log.Fatal(err)
+		// ErrServerClosed is the expected result of a graceful Shutdown
+		// and must not be treated as a failure. Any other error is
+		// logged, not fatal: the metrics endpoint is a monitoring
+		// convenience, and a bind failure here should not take down
+		// transaction forwarding.
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			b.log.WithError(err).Error("metrics server stopped unexpectedly")
 		}
 	}()
 
