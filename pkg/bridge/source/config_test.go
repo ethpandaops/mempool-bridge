@@ -1,6 +1,7 @@
 package source
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -14,20 +15,37 @@ func TestConfig_Validate_P2P(t *testing.T) {
 		{
 			name: "Valid P2P config",
 			config: &Config{
-				NodeRecords: []string{"enr:-IS4Q..."},
+				NodeRecords:   []string{"enr:-IS4Q..."},
+				RetryInterval: 30 * time.Second,
 			},
 			wantErr: false,
 		},
 		{
 			name: "P2P mode with empty nodeRecords",
 			config: &Config{
-				NodeRecords: []string{},
+				NodeRecords:   []string{},
+				RetryInterval: 30 * time.Second,
 			},
 			wantErr: true,
 		},
 		{
 			name:    "P2P mode with nil nodeRecords",
-			config:  &Config{},
+			config:  &Config{RetryInterval: 30 * time.Second},
+			wantErr: true,
+		},
+		{
+			name: "Invalid - zero retryInterval",
+			config: &Config{
+				NodeRecords: []string{"enr:-IS4Q..."},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Invalid - negative retryInterval",
+			config: &Config{
+				NodeRecords:   []string{"enr:-IS4Q..."},
+				RetryInterval: -1 * time.Second,
+			},
 			wantErr: true,
 		},
 	}
@@ -52,7 +70,8 @@ func TestConfig_Validate_RPC(t *testing.T) {
 		{
 			name: "Valid RPC config with WebSocket",
 			config: &Config{
-				RPCEndpoints: []string{"ws://localhost:8546"},
+				RPCEndpoints:  []string{"ws://localhost:8546"},
+				RetryInterval: 30 * time.Second,
 			},
 			wantErr: false,
 		},
@@ -61,6 +80,7 @@ func TestConfig_Validate_RPC(t *testing.T) {
 			config: &Config{
 				RPCEndpoints:    []string{"http://localhost:8545"},
 				PollingInterval: 10 * time.Second,
+				RetryInterval:   30 * time.Second,
 			},
 			wantErr: false,
 		},
@@ -72,13 +92,15 @@ func TestConfig_Validate_RPC(t *testing.T) {
 					"http://localhost:8545",
 				},
 				PollingInterval: 10 * time.Second,
+				RetryInterval:   30 * time.Second,
 			},
 			wantErr: false,
 		},
 		{
 			name: "Invalid - empty endpoints",
 			config: &Config{
-				RPCEndpoints: []string{},
+				RPCEndpoints:  []string{},
+				RetryInterval: 30 * time.Second,
 			},
 			wantErr: true,
 		},
@@ -87,20 +109,23 @@ func TestConfig_Validate_RPC(t *testing.T) {
 			config: &Config{
 				RPCEndpoints:    []string{"http://localhost:8545"},
 				PollingInterval: 500 * time.Millisecond,
+				RetryInterval:   30 * time.Second,
 			},
 			wantErr: true,
 		},
 		{
 			name: "Invalid - unsupported protocol",
 			config: &Config{
-				RPCEndpoints: []string{"ftp://localhost:21"},
+				RPCEndpoints:  []string{"ftp://localhost:21"},
+				RetryInterval: 30 * time.Second,
 			},
 			wantErr: true,
 		},
 		{
 			name: "Invalid - no protocol",
 			config: &Config{
-				RPCEndpoints: []string{"localhost:8545"},
+				RPCEndpoints:  []string{"localhost:8545"},
+				RetryInterval: 30 * time.Second,
 			},
 			wantErr: true,
 		},
@@ -112,6 +137,7 @@ func TestConfig_Validate_RPC(t *testing.T) {
 					"HTTP://localhost:8545",
 				},
 				PollingInterval: 10 * time.Second,
+				RetryInterval:   30 * time.Second,
 			},
 			wantErr: false,
 		},
@@ -123,8 +149,26 @@ func TestConfig_Validate_RPC(t *testing.T) {
 					"https://node.example.com:8545",
 				},
 				PollingInterval: 10 * time.Second,
+				RetryInterval:   30 * time.Second,
 			},
 			wantErr: false,
+		},
+		{
+			name: "Invalid - zero retryInterval",
+			config: &Config{
+				RPCEndpoints:    []string{"http://localhost:8545"},
+				PollingInterval: 10 * time.Second,
+			},
+			wantErr: true,
+		},
+		{
+			name: "Invalid - negative retryInterval",
+			config: &Config{
+				RPCEndpoints:    []string{"http://localhost:8545"},
+				PollingInterval: 10 * time.Second,
+				RetryInterval:   -1 * time.Second,
+			},
+			wantErr: true,
 		},
 	}
 
@@ -140,12 +184,17 @@ func TestConfig_Validate_RPC(t *testing.T) {
 
 func TestConfig_Validate_UnknownMode(t *testing.T) {
 	config := &Config{
-		NodeRecords: []string{"enr:-IS4Q..."},
+		NodeRecords:   []string{"enr:-IS4Q..."},
+		RetryInterval: 30 * time.Second,
 	}
 
 	err := config.Validate("unknown")
 	if err == nil {
 		t.Error("Validate() with unknown mode should return error")
+	}
+
+	if !errors.Is(err, ErrUnknownMode) {
+		t.Errorf("Validate() with unknown mode error = %v, want %v", err, ErrUnknownMode)
 	}
 }
 

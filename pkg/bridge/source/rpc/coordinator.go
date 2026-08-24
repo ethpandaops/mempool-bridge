@@ -18,8 +18,6 @@ import (
 var (
 	// ErrConfigRequired is returned when config is nil
 	ErrConfigRequired = errors.New("config is required")
-	// ErrRPCEndpointsRequired is returned when rpcEndpoints is empty
-	ErrRPCEndpointsRequired = errors.New("rpcEndpoints is required")
 )
 
 // Coordinator manages multiple RPC peer connections for sourcing transactions
@@ -50,8 +48,8 @@ func NewCoordinator(config *source.Config, broadcast func(ctx context.Context, t
 		return nil, ErrConfigRequired
 	}
 
-	if len(config.RPCEndpoints) == 0 {
-		return nil, ErrRPCEndpointsRequired
+	if err := config.Validate("rpc"); err != nil {
+		return nil, err
 	}
 
 	return &Coordinator{

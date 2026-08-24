@@ -19,6 +19,8 @@ var (
 	ErrUnsupportedProtocol = errors.New("rpc endpoint must use a supported protocol (ws://, wss://, http://, https://)")
 	// ErrUnknownMode is returned when an unknown mode is specified
 	ErrUnknownMode = errors.New("unknown mode")
+	// ErrInvalidRetryInterval is returned when retryInterval is not positive
+	ErrInvalidRetryInterval = errors.New("retryInterval must be greater than zero")
 )
 
 // Config holds the source configuration.
@@ -46,6 +48,10 @@ func (c *Config) Validate(mode any) error {
 		} else {
 			modeStr = fmt.Sprintf("%v", mode)
 		}
+	}
+
+	if c.RetryInterval <= 0 {
+		return ErrInvalidRetryInterval
 	}
 
 	switch modeStr {
