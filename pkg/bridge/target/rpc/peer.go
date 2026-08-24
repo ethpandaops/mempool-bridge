@@ -3,6 +3,7 @@ package rpc
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -122,6 +123,24 @@ func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Trans
 		go func() {
 			sem <- struct{}{}        // Acquire semaphore
 			defer func() { <-sem }() // Release semaphore
+
+			// A panic here must still produce a result: the collector
+			// loop below reads exactly len(*transactions) times and
+			// would hang forever waiting on one that never arrives.
+			defer func() {
+				if r := recover(); r != nil {
+					p.log.WithFields(logrus.Fields{
+						"tx_hash": tx.Hash().String(),
+						"panic":   r,
+					}).Error("panic sending transaction")
+
+					results <- sendResult{
+						txHash: tx.Hash().String(),
+						txType: tx.Type(),
+						err:    fmt.Errorf("panic: %v", r),
+					}
+				}
+			}()
 
 			err := p.ethClient.SendTransaction(ctx, tx)
 

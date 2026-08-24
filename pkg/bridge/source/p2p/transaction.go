@@ -68,6 +68,12 @@ func (t TransactionExporter) Shutdown(_ context.Context) error {
 //nolint:gocyclo // Complex transaction processing logic required for P2P
 func (p *Peer) ExportNormalTransactions(ctx context.Context, items []*common.Hash) error {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p.log.WithField("panic", r).Error("panic exporting normal transactions")
+			}
+		}()
+
 		if len(items) == 0 {
 			return
 		}
@@ -155,6 +161,12 @@ func (p *Peer) ExportNormalTransactions(ctx context.Context, items []*common.Has
 // ExportBlobTransactions handles blob transactions with priority
 func (p *Peer) ExportBlobTransactions(ctx context.Context, items []*common.Hash) error {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				p.log.WithField("panic", r).Error("panic exporting blob transactions")
+			}
+		}()
+
 		if len(items) == 0 {
 			return
 		}

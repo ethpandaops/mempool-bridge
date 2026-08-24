@@ -69,7 +69,10 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string, han
 //
 //nolint:gocyclo // Complex initialization logic required for P2P peer setup
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
-	response := make(chan error)
+	// Buffered so OnDisconnect never blocks: a second or late disconnect
+	// callback (only the first is ever read by the coordinator) would
+	// otherwise park that callback goroutine forever.
+	response := make(chan error, 1)
 
 	// Initialize normal transaction exporter
 	normalExporter, err := NewTransactionExporter(p.log.WithField("queue", "normal"), p.ExportNormalTransactions)
@@ -177,9 +180,7 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 			"reason": str,
 		}).Debug("disconnected from client")
 
-		if response != nil {
-			response <- fmt.Errorf("%w (reason %s)", ErrPeerDisconnected, str)
-		}
+		response <- fmt.Errorf("%w (reason %s)", ErrPeerDisconnected, str)
 
 		return nil
 	})

@@ -39,7 +39,10 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string) (*P
 
 // Start starts the peer connection.
 func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
-	response := make(chan error)
+	// Buffered so OnDisconnect never blocks: a second or late disconnect
+	// callback (only the first is ever read by the coordinator) would
+	// otherwise park that callback goroutine forever.
+	response := make(chan error, 1)
 
 	p.client.OnStatus(ctx, func(_ context.Context, _ mimicry.Status) error {
 		p.ready = true

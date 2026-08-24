@@ -390,6 +390,20 @@ func (p *Peer) fetchAndProcessTransactions(ctx context.Context, txHashes []strin
 			sem <- struct{}{}        // Acquire semaphore
 			defer func() { <-sem }() // Release semaphore
 
+			// A panic here must still produce a result: the collector
+			// loop below reads exactly len(txHashes) times and would
+			// hang forever waiting on one that never arrives.
+			defer func() {
+				if r := recover(); r != nil {
+					p.log.WithFields(logrus.Fields{
+						"tx_hash": txHash,
+						"panic":   r,
+					}).Error("panic fetching transaction")
+
+					results <- fetchResult{txHash: txHash, err: fmt.Errorf("panic: %v", r)}
+				}
+			}()
+
 			// Create a fresh context for fetching
 			fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 			defer cancel()
