@@ -186,7 +186,10 @@ func (bvp *BatchItemProcessor[T]) ForceFlush(ctx context.Context) error {
 	var err error
 
 	if bvp.e != nil {
-		wait := make(chan error)
+		// Buffered so the goroutine below can always deliver its result
+		// and exit even if ctx is cancelled first and nothing is left
+		// reading wait, which would otherwise leak that goroutine forever.
+		wait := make(chan error, 1)
 
 		go func() {
 			wait <- bvp.exportItems(ctx)
@@ -369,6 +372,8 @@ func (bvp *BatchItemProcessor[T]) enqueueDrop(_ context.Context, sd *T) bool {
 
 	select {
 	case <-bvp.stopCh:
+		atomic.AddUint32(&bvp.dropped, 1)
+
 		return false
 	default:
 	}
