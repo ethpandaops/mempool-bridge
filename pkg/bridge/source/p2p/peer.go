@@ -24,8 +24,6 @@ type Peer struct {
 
 	client *mimicry.Client
 
-	// don't send duplicate events from the same client
-	duplicateCache *cache.DuplicateCache
 	// shared cache between clients
 	sharedCache *cache.SharedCache
 
@@ -51,15 +49,12 @@ func NewPeer(ctx context.Context, log logrus.FieldLogger, nodeRecord string, han
 		return nil, err
 	}
 
-	duplicateCache := cache.NewDuplicateCache()
-
 	return &Peer{
 		log:            log.WithField("node_record", nodeRecord),
 		nodeRecord:     nodeRecord,
 		handler:        handler,
 		txFilterConfig: txFilterConfig,
 		client:         client,
-		duplicateCache: duplicateCache,
 		sharedCache:    sharedCache,
 		metrics:        metrics,
 	}, nil
@@ -100,8 +95,6 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 		processor.WithExportTimeout(500*time.Millisecond),
 		processor.WithMaxExportBatchSize(1), // Process only one blob at a time
 	)
-
-	p.duplicateCache.Start()
 
 	p.client.OnStatus(ctx, func(_ context.Context, _ mimicry.Status) error {
 		return nil
@@ -198,8 +191,6 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 
 // Stop stops the peer and cleans up resources.
 func (p *Peer) Stop(ctx context.Context) error {
-	p.duplicateCache.Stop()
-
 	if err := p.normalTxProc.Shutdown(ctx); err != nil {
 		return err
 	}
