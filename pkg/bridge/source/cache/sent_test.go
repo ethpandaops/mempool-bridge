@@ -42,6 +42,25 @@ func TestSentCache_StartStop(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 }
 
+func TestSentCache_StopStopsScheduler(t *testing.T) {
+	c := NewSentCacheWithRegisterer(nil)
+	ctx := context.Background()
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if c.cron == nil || !c.cron.IsRunning() {
+		t.Fatal("expected the metrics scheduler to be running after Start()")
+	}
+
+	c.Stop()
+
+	if c.cron.IsRunning() {
+		t.Fatal("expected the metrics scheduler to be stopped after Stop(), but it is still running")
+	}
+}
+
 func TestSentCache_SetAndGet(t *testing.T) {
 	cache := NewSentCacheWithRegisterer(nil)
 	ctx := context.Background()

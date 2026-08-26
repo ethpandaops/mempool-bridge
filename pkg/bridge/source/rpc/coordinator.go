@@ -35,7 +35,8 @@ type Coordinator struct {
 
 	metrics *source.Metrics
 
-	mu sync.Mutex
+	mu   sync.Mutex
+	cron *gocron.Scheduler
 }
 
 // CoordinatorStatus represents the status of the RPC coordinator
@@ -143,6 +144,20 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 
 // Stop stops the RPC coordinator
 func (c *Coordinator) Stop(_ context.Context) error {
+	c.cache.Stop()
+
+	// Read the scheduler under the lock, then release it before calling
+	// Stop(): the scheduler waits for any in-flight job to finish, and the
+	// status jobs it runs need this same lock, so holding it here would
+	// deadlock against a job that is currently running.
+	c.mu.Lock()
+	cr := c.cron
+	c.mu.Unlock()
+
+	if cr != nil {
+		cr.Stop()
+	}
+
 	return nil
 }
 
@@ -184,8 +199,11 @@ func (c *Coordinator) startCrons(ctx context.Context) error {
 		return err
 	}
 
-
 	cr.StartAsync()
+
+	c.mu.Lock()
+	c.cron = cr
+	c.mu.Unlock()
 
 	return nil
 }
