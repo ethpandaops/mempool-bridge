@@ -10,8 +10,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -427,6 +429,102 @@ func TestBatchItemProcessorForceFlushCancellation(t *testing.T) {
 	if got, want := bsp.ForceFlush(ctx), context.Canceled; !errors.Is(got, want) {
 		t.Errorf("expected %q error, got %v", want, got)
 	}
+}
+
+// Regression test for enqueueDrop silently dropping items once the
+// processor is stopped, without counting them the way the queue-full path
+// already does.
+func TestEnqueueDrop_CountsDropsAfterStop(t *testing.T) {
+	te := testBatchExporter[TestItem]{}
+	bvp := NewBatchItemProcessor[TestItem](&te, nullLogger())
+
+	require.NoError(t, bvp.Shutdown(context.Background()))
+
+	before := atomic.LoadUint32(&bvp.dropped)
+
+	if wrote := bvp.enqueueDrop(context.Background(), &TestItem{name: "test"}); wrote {
+		t.Fatal("expected enqueueDrop to report the item as not written once stopped")
+	}
+
+	after := atomic.LoadUint32(&bvp.dropped)
+	if after != before+1 {
+		t.Fatalf("expected the dropped counter to increment by 1, got %d -> %d", before, after)
+	}
+}
+
+// blockingExporter blocks inside ExportItems until told to proceed, so a
+// caller can force ForceFlush to hit ctx.Done() before the detached export
+// goroutine finishes.
+type blockingExporter[T TestItem] struct {
+	proceed chan struct{}
+}
+
+func (e *blockingExporter[T]) ExportItems(_ context.Context, _ []*T) error {
+	<-e.proceed
+
+	return nil
+}
+
+func (e *blockingExporter[T]) Shutdown(context.Context) error { return nil }
+
+// Regression test for ForceFlush leaking its detached export goroutine when
+// ctx is cancelled before the export finishes: the goroutine still tries to
+// deliver its result on wait, and with wait unbuffered and ForceFlush
+// already returned, that send blocked forever.
+func TestForceFlush_DoesNotLeakGoroutineOnCtxCancel(t *testing.T) {
+	const n = 20
+
+	proceed := make([]chan struct{}, n)
+	bvps := make([]*BatchItemProcessor[TestItem], n)
+
+	runtime.GC()
+	time.Sleep(50 * time.Millisecond)
+	baseline := runtime.NumGoroutine()
+
+	for i := 0; i < n; i++ {
+		proceed[i] = make(chan struct{})
+		bvps[i] = NewBatchItemProcessor[TestItem](&blockingExporter[TestItem]{proceed: proceed[i]}, nullLogger())
+
+		bvps[i].Write(&TestItem{name: "test"})
+		time.Sleep(20 * time.Millisecond) // let processQueue move it into bvp.batch
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already cancelled: ForceFlush must return via ctx.Done(), not wait
+
+		if err := bvps[i].ForceFlush(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("ForceFlush() error = %v, want %v", err, context.Canceled)
+		}
+	}
+
+	// Let every blocked ExportItems call finish now that nothing is
+	// waiting on ForceFlush's result. Each detached goroutine should still
+	// be able to deliver into wait and exit, not leak blocked forever.
+	for _, p := range proceed {
+		close(p)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Shut every processor down cleanly so its always-present
+	// processQueue/drainQueue goroutine (unrelated to the bug under test)
+	// doesn't get counted as part of the leak.
+	for _, bvp := range bvps {
+		require.NoError(t, bvp.Shutdown(context.Background()))
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		runtime.GC()
+
+		if runtime.NumGoroutine() <= baseline+2 { // small slack for unrelated background goroutines
+			return
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	t.Fatalf("goroutine count did not settle back to baseline, leak suspected: baseline=%d, now=%d",
+		baseline, runtime.NumGoroutine())
 }
 
 func nullLogger() *logrus.Logger {
