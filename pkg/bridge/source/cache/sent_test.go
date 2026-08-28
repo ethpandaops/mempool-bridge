@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -40,6 +41,21 @@ func TestSentCache_StartStop(t *testing.T) {
 
 	// Give cache time to stop
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestSentCache_CapacityBound(t *testing.T) {
+	c := NewSentCacheWithRegisterer(nil)
+
+	// Deliberately not calling Start(): the capacity bound must hold on
+	// the Set() path itself, independent of whether the janitor is
+	// running, as defense-in-depth against unbounded growth.
+	for i := 0; i < sentCacheCapacity+1000; i++ {
+		c.Transaction.Set(fmt.Sprintf("0x%d", i), time.Now(), time.Minute)
+	}
+
+	if got := c.Transaction.Len(); got > sentCacheCapacity {
+		t.Fatalf("expected the sent cache to stay within capacity %d, got %d entries", sentCacheCapacity, got)
+	}
 }
 
 func TestSentCache_SetAndGet(t *testing.T) {
