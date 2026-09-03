@@ -20,6 +20,8 @@ var (
 	ErrConfigRequired = errors.New("config is required")
 	// ErrPeerDisconnected is returned when peer disconnects
 	ErrPeerDisconnected = errors.New("disconnected from peer")
+	// ErrNoPeersAvailable is returned when there are no connected peers to send to
+	ErrNoPeersAvailable = errors.New("no target peers available")
 )
 
 // Coordinator manages multiple P2P target peers.
@@ -229,8 +231,11 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 	peers := *c.peers
 	c.mu.Unlock()
 
+	connectedPeers := 0
+
 	for _, peer := range peers {
 		if peer != nil {
+			connectedPeers++
 			p := peer // Create a copy of the loop variable to avoid race conditions
 
 			errg.Go(func() error {
@@ -251,6 +256,13 @@ func (c *Coordinator) SendTransactionsToPeers(ctx context.Context, transactions 
 				return err
 			})
 		}
+	}
+
+	// Delivering to zero peers is not success: without this, a broadcaster
+	// waiting on this call has no way to distinguish "delivered" from
+	// "there was nobody to deliver to".
+	if connectedPeers == 0 {
+		return ErrNoPeersAvailable
 	}
 
 	return errg.Wait()
