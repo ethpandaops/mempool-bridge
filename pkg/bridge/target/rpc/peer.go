@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethpandaops/ethcore/pkg/execution/mimicry"
@@ -23,7 +24,7 @@ type Peer struct {
 	ethClient       *ethclient.Client
 	sendConcurrency int
 
-	ready bool
+	ready atomic.Bool
 }
 
 // NewPeer creates a new RPC target peer
@@ -37,7 +38,6 @@ func NewPeer(_ context.Context, log logrus.FieldLogger, rpcEndpoint string, send
 		log:             log.WithField("rpc_endpoint", rpcEndpoint),
 		rpcEndpoint:     rpcEndpoint,
 		sendConcurrency: sendConcurrency,
-		ready:           false,
 	}
 
 	return &p, nil
@@ -62,13 +62,13 @@ func (p *Peer) Start(ctx context.Context) (<-chan error, error) {
 		return nil, err
 	}
 
-	p.ready = true
+	p.ready.Store(true)
 	p.log.Info("connected to RPC endpoint")
 
 	// Monitor connection in background
 	go func() {
 		<-ctx.Done()
-		p.ready = false
+		p.ready.Store(false)
 		response <- ctx.Err()
 	}()
 
@@ -97,7 +97,7 @@ func (p *Peer) SendTransactions(ctx context.Context, transactions *mimicry.Trans
 		TotalSent:      0,
 	}
 
-	if !p.ready {
+	if !p.ready.Load() {
 		p.log.Debug("peer is not ready")
 		return result, nil
 	}

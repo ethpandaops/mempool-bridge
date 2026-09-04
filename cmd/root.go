@@ -4,6 +4,8 @@ package cmd
 import (
 	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/creasty/defaults"
 	"github.com/ethpandaops/mempool-bridge/pkg/bridge"
@@ -21,7 +23,11 @@ var rootCmd = &cobra.Command{
 	Run: func(_ *cobra.Command, _ []string) {
 		cfg := initCommon()
 		b := bridge.New(log, cfg)
-		if err := b.Start(context.Background()); err != nil {
+
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+		defer stop()
+
+		if err := b.Start(ctx); err != nil {
 			log.WithError(err).Fatal("failed to start bridge")
 		}
 	},

@@ -20,6 +20,8 @@ var (
 	ErrConfigRequired = errors.New("config is required")
 	// ErrRPCEndpointsRequired is returned when rpcEndpoints is empty
 	ErrRPCEndpointsRequired = errors.New("rpcEndpoints is required")
+	// ErrCoordinatorStopped is returned when the coordinator is shutting down
+	ErrCoordinatorStopped = errors.New("coordinator stopped")
 )
 
 // Coordinator manages multiple RPC peer connections for sourcing transactions
@@ -36,6 +38,13 @@ type Coordinator struct {
 	metrics *source.Metrics
 
 	mu sync.Mutex
+
+	// stopCtx is cancelled by Stop to unblock every per-peer goroutine and
+	// abort any in-progress retry wait; wg tracks those goroutines so Stop
+	// can wait for their cleanup to actually finish before returning.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // CoordinatorStatus represents the status of the RPC coordinator
@@ -54,13 +63,17 @@ func NewCoordinator(config *source.Config, broadcast func(ctx context.Context, t
 		return nil, ErrRPCEndpointsRequired
 	}
 
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+
 	return &Coordinator{
-		config:    config,
-		broadcast: broadcast,
-		log:       log.WithField("component", "source-rpc"),
-		cache:     cache.NewSharedCache(),
-		peers:     &map[string]bool{},
-		metrics:   source.NewMetrics("mempool_bridge_source"),
+		config:     config,
+		broadcast:  broadcast,
+		log:        log.WithField("component", "source-rpc"),
+		cache:      cache.NewSharedCache(),
+		peers:      &map[string]bool{},
+		metrics:    source.NewMetrics("mempool_bridge_source"),
+		stopCtx:    stopCtx,
+		stopCancel: stopCancel,
 	}, nil
 }
 
@@ -85,7 +98,11 @@ func (c *Coordinator) Start(ctx context.Context) error {
 
 // startPollingPeer starts an HTTP polling peer
 func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
+	c.wg.Add(1)
+
 	go func(endpoint string, peers *map[string]bool) {
+		defer c.wg.Done()
+
 		_ = retry.Do(
 			func() error {
 				peer, err := NewPeer(
@@ -108,7 +125,11 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 					c.mu.Unlock()
 
 					if peer != nil {
-						if err = peer.Stop(ctx); err != nil {
+						// Use a fresh context rather than ctx above: by the
+						// time this runs during a real shutdown, ctx is
+						// already cancelled, which must not be allowed to
+						// cut short peer.Stop's own cleanup.
+						if err = peer.Stop(context.Background()); err != nil {
 							c.log.WithError(err).Warn("failed to stop polling peer")
 						}
 					}
@@ -123,15 +144,15 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 				(*peers)[endpoint] = true
 				c.mu.Unlock()
 
-				// Wait for disconnect signal (only if Start succeeded)
-				if disconnect != nil {
-					response := <-disconnect
+				select {
+				case response := <-disconnect:
 					return response
+				case <-c.stopCtx.Done():
+					return retry.Unrecoverable(ErrCoordinatorStopped)
 				}
-
-				return nil
 			},
 			retry.Attempts(0),
+			retry.Context(c.stopCtx),
 			retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
 				c.log.WithError(err).Error("RPC polling peer failed, will retry")
 
@@ -141,9 +162,24 @@ func (c *Coordinator) startPollingPeer(ctx context.Context, endpoint string) {
 	}(endpoint, c.peers)
 }
 
-// Stop stops the RPC coordinator
-func (c *Coordinator) Stop(_ context.Context) error {
-	return nil
+// Stop stops the RPC coordinator, waiting for each peer's cleanup to finish
+// or for ctx to expire, whichever comes first.
+func (c *Coordinator) Stop(ctx context.Context) error {
+	c.stopCancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // status returns the current status of the coordinator

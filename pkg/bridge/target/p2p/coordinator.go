@@ -20,6 +20,8 @@ var (
 	ErrConfigRequired = errors.New("config is required")
 	// ErrPeerDisconnected is returned when peer disconnects
 	ErrPeerDisconnected = errors.New("disconnected from peer")
+	// ErrCoordinatorStopped is returned when the coordinator is shutting down
+	ErrCoordinatorStopped = errors.New("coordinator stopped")
 )
 
 // Coordinator manages multiple P2P target peers.
@@ -37,6 +39,13 @@ type Coordinator struct {
 	txCountersLock sync.Mutex
 
 	mu sync.Mutex
+
+	// stopCtx is cancelled by Stop to unblock every per-peer goroutine and
+	// abort any in-progress retry wait; wg tracks those goroutines so Stop
+	// can wait for their cleanup to actually finish before returning.
+	stopCtx    context.Context
+	stopCancel context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // CoordinatorStatus tracks peer connection status.
@@ -55,12 +64,16 @@ func NewCoordinator(config *target.Config, log logrus.FieldLogger) (*Coordinator
 		return nil, err
 	}
 
+	stopCtx, stopCancel := context.WithCancel(context.Background())
+
 	return &Coordinator{
 		config:     config,
 		log:        log.WithField("component", "target-p2p"),
 		peers:      &map[string]*Peer{},
 		metrics:    target.NewMetrics("mempool_bridge_target"),
 		txCounters: make(map[string]int),
+		stopCtx:    stopCtx,
+		stopCancel: stopCancel,
 	}, nil
 }
 
@@ -71,7 +84,11 @@ func (c *Coordinator) Start(ctx context.Context) error {
 		(*c.peers)[nodeRecord] = nil
 		c.mu.Unlock()
 
+		c.wg.Add(1)
+
 		go func(record string, peers *map[string]*Peer) {
+			defer c.wg.Done()
+
 			_ = retry.Do(
 				func() error {
 					peer, err := NewPeer(ctx, c.log, record)
@@ -85,7 +102,11 @@ func (c *Coordinator) Start(ctx context.Context) error {
 						c.mu.Unlock()
 
 						if peer != nil {
-							if err = peer.Stop(ctx); err != nil {
+							// Use a fresh context rather than ctx above: by
+							// the time this runs during a real shutdown,
+							// ctx is already cancelled, which must not be
+							// allowed to cut short peer.Stop's own cleanup.
+							if err = peer.Stop(context.Background()); err != nil {
 								c.log.WithError(err).Warn("failed to stop peer")
 							}
 						}
@@ -100,11 +121,15 @@ func (c *Coordinator) Start(ctx context.Context) error {
 					(*peers)[record] = peer
 					c.mu.Unlock()
 
-					response := <-disconnect
-
-					return response
+					select {
+					case response := <-disconnect:
+						return response
+					case <-c.stopCtx.Done():
+						return retry.Unrecoverable(ErrCoordinatorStopped)
+					}
 				},
 				retry.Attempts(0),
+				retry.Context(c.stopCtx),
 				retry.DelayType(func(_ uint, err error, _ *retry.Config) time.Duration {
 					c.log.WithError(err).Debug("peer failed")
 
@@ -117,9 +142,24 @@ func (c *Coordinator) Start(ctx context.Context) error {
 	return c.startCrons(ctx)
 }
 
-// Stop stops the coordinator and all peers.
-func (c *Coordinator) Stop(_ context.Context) error {
-	return nil
+// Stop stops the coordinator and all peers, waiting for each peer's cleanup
+// to finish or for ctx to expire, whichever comes first.
+func (c *Coordinator) Stop(ctx context.Context) error {
+	c.stopCancel()
+
+	done := make(chan struct{})
+
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Coordinator) status(_ context.Context) CoordinatorStatus {
