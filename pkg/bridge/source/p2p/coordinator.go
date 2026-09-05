@@ -66,6 +66,14 @@ func NewCoordinator(config *source.Config, broadcast func(ctx context.Context, t
 
 // Start starts all configured P2P source peers.
 func (c *Coordinator) Start(ctx context.Context) error {
+	// Start shared cache. Without this the Transaction cache's eviction
+	// goroutine never runs, and since p2p is push-based (most hashes are
+	// never re-queried, which is the only other way an entry gets evicted)
+	// expired entries would accumulate for as long as the process runs.
+	if err := c.cache.Start(ctx); err != nil {
+		return err
+	}
+
 	for _, nodeRecord := range c.config.NodeRecords {
 		c.mu.Lock()
 		(*c.peers)[nodeRecord] = false
