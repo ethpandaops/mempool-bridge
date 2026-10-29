@@ -20,7 +20,6 @@ import (
 	targetp2p "github.com/ethpandaops/mempool-bridge/pkg/bridge/target/p2p"
 	targetrpc "github.com/ethpandaops/mempool-bridge/pkg/bridge/target/rpc"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/jellydator/ttlcache/v3"
 	"github.com/sirupsen/logrus"
 )
 
@@ -195,15 +194,16 @@ func (b *Bridge) broadcast(ctx context.Context, transactions *mimicry.Transactio
 	for _, tx := range *transactions {
 		txHash := tx.Hash().String()
 
-		// Check if we've already sent this transaction
-		if exists := b.sentCache.Transaction.Get(txHash); exists != nil {
+		// GetOrSet checks and marks as sent in a single atomic operation,
+		// so two concurrent callers racing the same hash can't both observe
+		// a miss and both forward it (a plain Get then Set has a window
+		// where that can happen).
+		if _, existed := b.sentCache.Transaction.GetOrSet(txHash, time.Now()); existed {
 			duplicateCount++
 			b.log.WithField("tx_hash", txHash).Debug("skipping already sent transaction")
 			continue
 		}
 
-		// Mark as sent
-		b.sentCache.Transaction.Set(txHash, time.Now(), ttlcache.DefaultTTL)
 		filteredTxs = append(filteredTxs, tx)
 	}
 
