@@ -8,9 +8,9 @@ on:
 jobs:
   goreleaser:
     permissions:
-      contents: write      # GitHub release
-      packages: write      # push to ghcr.io/ethpandaops
-      id-token: write      # attest, and authenticate to the image mirror
+      contents: write
+      packages: write
+      id-token: write
       attestations: write
     runs-on:
       - ubuntu-latest
@@ -104,7 +104,7 @@ jobs:
     permissions:
       contents: read
       packages: read
-      id-token: write      # authenticate to the image mirror
+      id-token: write
     steps:
       - name: Mirror to Docker Hub
         uses: ethpandaops/actions/mirror-image@62e1509a4fcb59de57d51c05f1e2843f2439fa99
